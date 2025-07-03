@@ -9,30 +9,145 @@ import random
 import time
 from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTableWidget,
-                             QTableWidgetItem, QVBoxLayout, QWidget, QDialog,
+                             QTableWidgetItem, QVBoxLayout, QWidget, QTabWidget,
                              QListWidget, QPushButton, QSplitter, QFormLayout,
-                             QLineEdit, QRadioButton, QCheckBox, QMenuBar,
+                             QLineEdit, QRadioButton, QCheckBox,
                              QHBoxLayout, QButtonGroup, QLabel)
 from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt
-from PyQt6.QtGui import QColor, QAction
+from PyQt6.QtGui import QColor
 
 
-class RuleEditorWindow(QDialog):
-    """规则编辑器窗口类 - 用于管理和编辑抢单规则"""
+class Worker(QObject):
+    """后台工作线程类 - 负责异步处理订单监控和规则匹配"""
+
+    # 定义自定义信号，用于向主窗口发送抢单机会数据
+    new_opportunity = pyqtSignal(dict)
+
+    def run(self):
+        """后台任务主方法"""
+        # 实例化规则引擎
+        engine = RuleEngine('rules.json')
+
+        async def main_loop():
+            """主要的异步循环，模拟持续抓取订单"""
+            print("🚀 后台监控线程启动...")
+
+            # 模拟订单数据的基础模板
+            cities = ['北京', '上海', '广州', '深圳', '杭州']
+            cinema_templates = [
+                '{}CBD万达影城',
+                '{}万达影城',
+                '{}大悦城影城',
+                '{}购物中心影城'
+            ]
+            hall_types = ['IMAX厅', 'imax厅', '激光IMAX厅', '普通厅', '4DX厅', 'VIP厅']
+
+            while True:
+                try:
+                    # 生成随机的模拟订单
+                    city = random.choice(cities)
+                    cinema_template = random.choice(cinema_templates)
+                    cinema_name = cinema_template.format(city)
+                    hall_type = random.choice(hall_types)
+                    bidding_price = round(random.uniform(45.0, 80.0), 1)
+
+                    # 创建模拟订单
+                    order = {
+                        'city': city,
+                        'cinema_name': cinema_name,
+                        'hall_type': hall_type,
+                        'bidding_price': bidding_price,
+                        'show_time': f"{random.randint(9, 22)}:{random.randint(0, 5)*10:02d}",
+                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    }
+
+                    # 使用规则引擎检查订单
+                    result = engine.check_order(order)
+
+                    # 如果匹配成功，发射信号
+                    if result is not None:
+                        # 添加时间戳和场次信息到结果中
+                        result['timestamp'] = order['timestamp']
+                        result['show_time'] = order['show_time']
+
+                        print(f"✅ 发现抢单机会: {result['rule_name']} - 利润{result['profit']:.1f}元")
+
+                        # 发射信号到主窗口
+                        self.new_opportunity.emit(result)
+
+                    # 控制抓取频率，模拟真实抓取间隔
+                    await asyncio.sleep(1)
+
+                except Exception as e:
+                    print(f"❌ 后台处理出错: {e}")
+                    await asyncio.sleep(2)
+
+        # 启动异步循环
+        asyncio.run(main_loop())
+
+
+class MainWindow(QMainWindow):
+    """主窗口类 - 智能抢单决策助手的GUI界面"""
 
     def __init__(self):
-        """初始化规则编辑器窗口"""
+        """初始化主窗口"""
         super().__init__()
 
-        # 设置窗口标题和大小
-        self.setWindowTitle("规则编辑器")
-        self.resize(800, 600)
+        # 设置窗口标题
+        self.setWindowTitle("智能抢单决策助手 v1.0")
 
-        # 初始化UI
-        self.init_ui()
+        # 设置窗口初始大小
+        self.resize(1200, 800)
 
-    def init_ui(self):
-        """初始化用户界面"""
+        # 创建Tab容器
+        self.tab_widget = QTabWidget()
+        self.setCentralWidget(self.tab_widget)
+
+        # 创建Tab页面
+        self.create_monitoring_tab()
+        self.create_editor_tab()
+
+        # 启动后台工作线程
+        self.init_worker_thread()
+
+    def create_monitoring_tab(self):
+        """创建第一个Tab页：抢单监控"""
+        # 创建状态栏
+        self.statusBar().showMessage("系统准备就绪...")
+
+        # 创建监控Tab容器
+        self.monitoring_tab = QWidget()
+
+        # 创建表格
+        self.table = QTableWidget()
+
+        # 设置表格表头
+        self.table.setColumnCount(7)
+        headers = ['触发时间', '利润', '影院名称', '影厅', '场次', '竞标价', '匹配规则']
+        self.table.setHorizontalHeaderLabels(headers)
+
+        # 设置表格列宽
+        self.table.setColumnWidth(0, 150)  # 触发时间
+        self.table.setColumnWidth(1, 80)   # 利润
+        self.table.setColumnWidth(2, 200)  # 影院名称
+        self.table.setColumnWidth(3, 100)  # 影厅
+        self.table.setColumnWidth(4, 120)  # 场次
+        self.table.setColumnWidth(5, 80)   # 竞标价
+        self.table.setColumnWidth(6, 180)  # 匹配规则
+
+        # 创建布局并添加表格
+        monitoring_layout = QVBoxLayout()
+        monitoring_layout.addWidget(self.table)
+        self.monitoring_tab.setLayout(monitoring_layout)
+
+        # 添加到Tab容器
+        self.tab_widget.addTab(self.monitoring_tab, "抢单监控")
+
+    def create_editor_tab(self):
+        """创建第二个Tab页：策略编辑"""
+        # 创建编辑Tab容器
+        self.editor_tab = QWidget()
+
         # 创建主分割器（左右分割）
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
 
@@ -47,12 +162,15 @@ class RuleEditorWindow(QDialog):
         main_splitter.addWidget(right_widget)
 
         # 设置分割器比例（左侧30%，右侧70%）
-        main_splitter.setSizes([240, 560])
+        main_splitter.setSizes([360, 840])
 
-        # 设置主布局
-        main_layout = QVBoxLayout()
-        main_layout.addWidget(main_splitter)
-        self.setLayout(main_layout)
+        # 设置编辑Tab布局
+        editor_layout = QVBoxLayout()
+        editor_layout.addWidget(main_splitter)
+        self.editor_tab.setLayout(editor_layout)
+
+        # 添加到Tab容器
+        self.tab_widget.addTab(self.editor_tab, "策略编辑")
 
     def create_left_panel(self):
         """创建左侧面板"""
@@ -167,129 +285,6 @@ class RuleEditorWindow(QDialog):
         print("保存所有规则")
         # TODO: 实现保存规则逻辑
 
-
-class Worker(QObject):
-    """后台工作线程类 - 负责异步处理订单监控和规则匹配"""
-
-    # 定义自定义信号，用于向主窗口发送抢单机会数据
-    new_opportunity = pyqtSignal(dict)
-
-    def run(self):
-        """后台任务主方法"""
-        # 实例化规则引擎
-        engine = RuleEngine('rules.json')
-
-        async def main_loop():
-            """主要的异步循环，模拟持续抓取订单"""
-            print("🚀 后台监控线程启动...")
-
-            # 模拟订单数据的基础模板
-            cities = ['北京', '上海', '广州', '深圳', '杭州']
-            cinema_templates = [
-                '{}CBD万达影城',
-                '{}万达影城',
-                '{}大悦城影城',
-                '{}购物中心影城'
-            ]
-            hall_types = ['IMAX厅', 'imax厅', '激光IMAX厅', '普通厅', '4DX厅', 'VIP厅']
-
-            while True:
-                try:
-                    # 生成随机的模拟订单
-                    city = random.choice(cities)
-                    cinema_template = random.choice(cinema_templates)
-                    cinema_name = cinema_template.format(city)
-                    hall_type = random.choice(hall_types)
-                    bidding_price = round(random.uniform(45.0, 80.0), 1)
-
-                    # 创建模拟订单
-                    order = {
-                        'city': city,
-                        'cinema_name': cinema_name,
-                        'hall_type': hall_type,
-                        'bidding_price': bidding_price,
-                        'show_time': f"{random.randint(9, 22)}:{random.randint(0, 5)*10:02d}",
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    }
-
-                    # 使用规则引擎检查订单
-                    result = engine.check_order(order)
-
-                    # 如果匹配成功，发射信号
-                    if result is not None:
-                        # 添加时间戳和场次信息到结果中
-                        result['timestamp'] = order['timestamp']
-                        result['show_time'] = order['show_time']
-
-                        print(f"✅ 发现抢单机会: {result['rule_name']} - 利润{result['profit']:.1f}元")
-
-                        # 发射信号到主窗口
-                        self.new_opportunity.emit(result)
-
-                    # 控制抓取频率，模拟真实抓取间隔
-                    await asyncio.sleep(1)
-
-                except Exception as e:
-                    print(f"❌ 后台处理出错: {e}")
-                    await asyncio.sleep(2)
-
-        # 启动异步循环
-        asyncio.run(main_loop())
-
-
-class MainWindow(QMainWindow):
-    """主窗口类 - 智能抢单决策助手的GUI界面"""
-
-    def __init__(self):
-        """初始化主窗口"""
-        super().__init__()
-
-        # 设置窗口标题
-        self.setWindowTitle("智能抢单决策助手 v1.0")
-
-        # 设置窗口初始大小
-        self.resize(1200, 800)
-
-        # 创建菜单栏
-        self.init_menu_bar()
-
-        # 创建核心UI组件
-        self.init_ui()
-
-        # 启动后台工作线程
-        self.init_worker_thread()
-
-    def init_ui(self):
-        """初始化用户界面"""
-        # 创建状态栏
-        self.statusBar().showMessage("系统准备就绪...")
-
-        # 创建表格
-        self.table = QTableWidget()
-
-        # 设置表格表头
-        self.table.setColumnCount(7)
-        headers = ['触发时间', '利润', '影院名称', '影厅', '场次', '竞标价', '匹配规则']
-        self.table.setHorizontalHeaderLabels(headers)
-
-        # 设置表格列宽
-        self.table.setColumnWidth(0, 150)  # 触发时间
-        self.table.setColumnWidth(1, 80)   # 利润
-        self.table.setColumnWidth(2, 200)  # 影院名称
-        self.table.setColumnWidth(3, 100)  # 影厅
-        self.table.setColumnWidth(4, 120)  # 场次
-        self.table.setColumnWidth(5, 80)   # 竞标价
-        self.table.setColumnWidth(6, 180)  # 匹配规则
-
-        # 创建中心布局
-        central_widget = QWidget()
-        layout = QVBoxLayout()
-        layout.addWidget(self.table)
-        central_widget.setLayout(layout)
-
-        # 设置中心部件
-        self.setCentralWidget(central_widget)
-
     def init_worker_thread(self):
         """初始化后台工作线程"""
         # 创建线程和工作对象
@@ -360,35 +355,6 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             print(f"❌ 添加数据到表格时出错: {e}")
-
-    def init_menu_bar(self):
-        """初始化菜单栏"""
-        # 创建菜单栏
-        menubar = self.menuBar()
-
-        # 创建"设置"菜单
-        settings_menu = menubar.addMenu("设置")
-
-        # 创建"配置规则..."动作
-        rule_config_action = QAction("配置规则...", self)
-        rule_config_action.setStatusTip("打开规则编辑器")
-        rule_config_action.triggered.connect(self.open_rule_editor)
-
-        # 添加动作到菜单
-        settings_menu.addAction(rule_config_action)
-
-    def open_rule_editor(self):
-        """打开规则编辑器"""
-        try:
-            # 创建规则编辑器窗口实例
-            rule_editor = RuleEditorWindow()
-
-            # 以模态对话框形式显示
-            rule_editor.exec()
-
-        except Exception as e:
-            print(f"❌ 打开规则编辑器时出错: {e}")
-
 
 class RuleEngine:
     """规则引擎类 - 负责加载和处理抢单决策规则"""
