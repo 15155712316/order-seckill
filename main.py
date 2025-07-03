@@ -10,7 +10,10 @@ import time
 import uuid
 import collections
 import logging
+import hashlib
+import base64
 from datetime import datetime
+from Crypto.Cipher import AES
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QWidget, QTabWidget,
                              QListWidget, QPushButton, QSplitter, QFormLayout,
@@ -28,6 +31,75 @@ logging.basicConfig(
         logging.StreamHandler()  # 输出到控制台
     ]
 )
+
+
+class Decryptor:
+    """AES解密器类 - 负责解密哈哈平台的API数据"""
+
+    def __init__(self, token):
+        """
+        初始化解密器
+
+        Args:
+            token (str): 用于生成密钥的token
+        """
+        self.token = token
+        self.key, self.iv = self._generate_key_iv()
+
+    def _generate_key_iv(self):
+        """
+        生成AES加密所需的key和iv
+
+        Returns:
+            tuple: (key, iv) 用于AES解密的密钥和初始化向量
+        """
+        # 生成key：对 token + "piaofan@123" 进行MD5哈希
+        key_string = f"{self.token}piaofan@123"
+        key = hashlib.md5(key_string.encode('utf-8')).digest()
+
+        # 生成iv：对 token + "piaofan@456" 进行MD5哈希，取前16位
+        iv_string = f"{self.token}piaofan@456"
+        iv = hashlib.md5(iv_string.encode('utf-8')).digest()[:16]
+
+        logging.debug(f"生成解密密钥，token: {self.token}")
+        return key, iv
+
+    def decrypt(self, encrypted_data):
+        """
+        解密Base64编码的加密数据
+
+        Args:
+            encrypted_data (str): Base64编码的加密数据字符串
+
+        Returns:
+            str: 解密后的JSON字符串
+
+        Raises:
+            Exception: 解密失败时抛出异常
+        """
+        try:
+            # a. 先对输入数据进行Base64解码
+            decoded_data = base64.b64decode(encrypted_data)
+
+            # b. 创建AES解密器（CBC模式）
+            cipher = AES.new(self.key, AES.MODE_CBC, self.iv)
+
+            # c. 执行解密
+            decrypted_padded_data = cipher.decrypt(decoded_data)
+
+            # d. 去除PKCS7填充
+            padding_length = decrypted_padded_data[-1]
+            decrypted_data = decrypted_padded_data[:-padding_length]
+
+            # e. 将字节数据解码为UTF-8字符串
+            decrypted_json_str = decrypted_data.decode('utf-8')
+
+            logging.debug(f"成功解密数据，长度: {len(decrypted_json_str)}")
+            return decrypted_json_str
+
+        except Exception as e:
+            logging.error(f"解密数据失败: {e}")
+            raise Exception(f"解密失败: {str(e)}")
 
 
 class DataFetcher:
@@ -152,25 +224,43 @@ class DataFetcher:
         Returns:
             list: 经过去重的新订单列表
         """
-        # 根据fetch_count模拟不同的API返回
+        # 创建解密器实例（使用模拟token）
+        decryptor = Decryptor("test_token_123")
+
+        # 模拟加密的API返回数据
         if self.fetch_count == 0:
-            # 第一次：返回前5条订单 (order_001 到 order_005)
-            raw_orders = self.MOCK_TOTAL_ORDERS[0:5]
-            logging.debug("模拟API返回：前5条订单 (order_001 到 order_005)")
+            # 第一次：模拟返回加密的前5条订单数据
+            mock_orders_data = self.MOCK_TOTAL_ORDERS[0:5]
+            # 模拟加密数据（实际应该是从API获取的加密字符串）
+            encrypted_data = self._simulate_encrypted_data(mock_orders_data)
+            logging.debug("模拟API返回：加密的前5条订单数据")
         elif self.fetch_count == 1:
-            # 第二次：返回第3到第8条订单 (order_003 到 order_008)
-            # 这将包含3条重复订单(003,004,005)和3条新订单(006,007,008)
-            raw_orders = self.MOCK_TOTAL_ORDERS[2:8]
-            logging.debug("模拟API返回：第3到第8条订单 (order_003 到 order_008)")
+            # 第二次：模拟返回加密的第3到第8条订单数据
+            mock_orders_data = self.MOCK_TOTAL_ORDERS[2:8]
+            encrypted_data = self._simulate_encrypted_data(mock_orders_data)
+            logging.debug("模拟API返回：加密的第3到第8条订单数据")
         elif self.fetch_count == 2:
-            # 第三次：返回最后3条订单 (order_008 到 order_010)
-            # 这将包含1条重复订单(008)和2条新订单(009,010)
-            raw_orders = self.MOCK_TOTAL_ORDERS[7:10]
-            logging.debug("模拟API返回：最后3条订单 (order_008 到 order_010)")
+            # 第三次：模拟返回加密的最后3条订单数据
+            mock_orders_data = self.MOCK_TOTAL_ORDERS[7:10]
+            encrypted_data = self._simulate_encrypted_data(mock_orders_data)
+            logging.debug("模拟API返回：加密的最后3条订单数据")
         else:
-            # 其他情况：返回空列表
+            # 其他情况：返回空的加密数据
+            encrypted_data = self._simulate_encrypted_data([])
+            logging.debug("模拟API返回：空的加密数据（测试结束）")
+
+        try:
+            # 解密API返回的数据
+            decrypted_json_str = decryptor.decrypt(encrypted_data)
+
+            # 将解密后的JSON字符串转换为Python对象
+            raw_orders = json.loads(decrypted_json_str)
+
+            logging.debug(f"成功解密并解析数据，获得 {len(raw_orders)} 条订单")
+
+        except Exception as e:
+            logging.error(f"解密或解析数据失败: {e}")
             raw_orders = []
-            logging.debug("模拟API返回：空列表（测试结束）")
 
         # 去重逻辑（保留原有逻辑）
         new_orders = []
@@ -198,6 +288,48 @@ class DataFetcher:
         await asyncio.sleep(0.1)
 
         return new_orders
+
+    def _simulate_encrypted_data(self, orders_data):
+        """
+        模拟加密数据（用于测试）
+
+        Args:
+            orders_data (list): 要加密的订单数据列表
+
+        Returns:
+            str: Base64编码的加密数据字符串
+        """
+        try:
+            # 将订单数据转换为JSON字符串
+            json_str = json.dumps(orders_data, ensure_ascii=False)
+
+            # 创建加密器（使用相同的token）
+            token = "test_token_123"
+            key_string = f"{token}piaofan@123"
+            key = hashlib.md5(key_string.encode('utf-8')).digest()
+
+            iv_string = f"{token}piaofan@456"
+            iv = hashlib.md5(iv_string.encode('utf-8')).digest()[:16]
+
+            # 对数据进行PKCS7填充
+            data_bytes = json_str.encode('utf-8')
+            padding_length = 16 - (len(data_bytes) % 16)
+            padded_data = data_bytes + bytes([padding_length] * padding_length)
+
+            # 创建AES加密器并加密
+            cipher = AES.new(key, AES.MODE_CBC, iv)
+            encrypted_data = cipher.encrypt(padded_data)
+
+            # Base64编码
+            encrypted_base64 = base64.b64encode(encrypted_data).decode('utf-8')
+
+            logging.debug(f"模拟加密数据，原始长度: {len(json_str)}, 加密后长度: {len(encrypted_base64)}")
+            return encrypted_base64
+
+        except Exception as e:
+            logging.error(f"模拟加密数据失败: {e}")
+            # 返回空数据的加密结果
+            return base64.b64encode(b'[]').decode('utf-8')
 
 
 class Worker(QObject):
