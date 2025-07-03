@@ -1,7 +1,58 @@
 # 智能抢单决策助手 - 主程序文件
 # 项目初始化完成，准备开始开发
 
+import sys
 import json
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QTableWidget,
+                             QTableWidgetItem, QVBoxLayout, QWidget)
+
+
+class MainWindow(QMainWindow):
+    """主窗口类 - 智能抢单决策助手的GUI界面"""
+
+    def __init__(self):
+        """初始化主窗口"""
+        super().__init__()
+
+        # 设置窗口标题
+        self.setWindowTitle("智能抢单决策助手 v1.0")
+
+        # 设置窗口初始大小
+        self.resize(1200, 800)
+
+        # 创建核心UI组件
+        self.init_ui()
+
+    def init_ui(self):
+        """初始化用户界面"""
+        # 创建状态栏
+        self.statusBar().showMessage("系统准备就绪...")
+
+        # 创建表格
+        self.table = QTableWidget()
+
+        # 设置表格表头
+        self.table.setColumnCount(7)
+        headers = ['触发时间', '利润', '影院名称', '影厅', '场次', '竞标价', '匹配规则']
+        self.table.setHorizontalHeaderLabels(headers)
+
+        # 设置表格列宽
+        self.table.setColumnWidth(0, 150)  # 触发时间
+        self.table.setColumnWidth(1, 80)   # 利润
+        self.table.setColumnWidth(2, 200)  # 影院名称
+        self.table.setColumnWidth(3, 100)  # 影厅
+        self.table.setColumnWidth(4, 120)  # 场次
+        self.table.setColumnWidth(5, 80)   # 竞标价
+        self.table.setColumnWidth(6, 180)  # 匹配规则
+
+        # 创建中心布局
+        central_widget = QWidget()
+        layout = QVBoxLayout()
+        layout.addWidget(self.table)
+        central_widget.setLayout(layout)
+
+        # 设置中心部件
+        self.setCentralWidget(central_widget)
 
 
 class RuleEngine:
@@ -113,12 +164,29 @@ class RuleEngine:
 
             if hall_mode == 'INCLUDE':
                 # INCLUDE模式：订单的影厅类型必须在规则的hall_set中
-                if order_hall_type not in {h.lower().strip() for h in hall_set}:
-                    continue  # 影厅类型不在包含列表中，跳到下一条规则
+                # 使用更灵活的匹配逻辑，支持部分匹配
+                hall_matched = False
+                for hall_type in hall_set:
+                    hall_type_lower = hall_type.lower().strip()
+                    # 检查是否包含关键词（如"IMAX"包含在"IMAX厅"中）
+                    if hall_type_lower in order_hall_type or order_hall_type in hall_type_lower:
+                        hall_matched = True
+                        break
+
+                if not hall_matched:
+                    continue  # 影厅类型不匹配，跳到下一条规则
 
             elif hall_mode == 'EXCLUDE':
                 # EXCLUDE模式：订单的影厅类型不能在规则的hall_set中
-                if order_hall_type in {h.lower().strip() for h in hall_set}:
+                hall_matched = False
+                for hall_type in hall_set:
+                    hall_type_lower = hall_type.lower().strip()
+                    # 检查是否包含关键词
+                    if hall_type_lower in order_hall_type or order_hall_type in hall_type_lower:
+                        hall_matched = True
+                        break
+
+                if hall_matched:
                     continue  # 影厅类型在排除列表中，跳到下一条规则
 
             # ALL模式默认通过，无需检查
@@ -145,115 +213,16 @@ class RuleEngine:
         return None
 
 
-# 测试导入所有依赖库
-def test_imports():
-    try:
-        import PyQt6
-        print("✅ PyQt6 导入成功")
-
-        import aiohttp
-        print("✅ aiohttp 导入成功")
-
-        import playsound
-        print("✅ playsound 导入成功")
-
-        print("🎉 所有依赖库安装成功！")
-        return True
-    except ImportError as e:
-        print(f"❌ 导入失败: {e}")
-        return False
-
-def test_rule_engine():
-    """测试RuleEngine类的功能"""
-    print("\n🔧 测试RuleEngine类...")
-
-    # 创建RuleEngine实例
-    engine = RuleEngine("rules.json")
-
-    # 显示加载的规则信息
-    print(f"📋 加载的规则数量: {len(engine.rules)}")
-
-    # 显示每条规则的基本信息
-    for i, rule in enumerate(engine.rules, 1):
-        rule_name = rule.get('rule_name', '未命名规则')
-        enabled = rule.get('enabled', False)
-        status = "✅ 启用" if enabled else "❌ 禁用"
-        print(f"   规则 {i}: {rule_name} - {status}")
-
-        # 显示hall_set转换结果
-        if 'hall_logic' in rule and 'hall_set' in rule['hall_logic']:
-            hall_set = rule['hall_logic']['hall_set']
-            print(f"      影厅类型集合: {hall_set}")
-
-
-def test_check_order():
-    """测试check_order方法的功能"""
-    print("\n🧪 测试check_order方法...")
-
-    # 创建RuleEngine实例
-    engine = RuleEngine("rules.json")
-
-    # 测试用例1：匹配成功的订单
-    test_order_1 = {
-        'city': '北京',
-        'cinema_name': '万达影城CBD店',
-        'hall_type': 'IMAX',
-        'bidding_price': 60.0
-    }
-
-    print(f"\n📝 测试订单1: {test_order_1}")
-    result_1 = engine.check_order(test_order_1)
-    if result_1:
-        print(f"✅ 匹配成功！")
-        print(f"   规则名称: {result_1['rule_name']}")
-        print(f"   计算利润: {result_1['profit']:.2f}元")
-        print(f"   影厅成本: {result_1['hall_cost']:.2f}元")
-        print(f"   最低利润要求: {result_1['min_profit_threshold']:.2f}元")
-    else:
-        print("❌ 未匹配到合适的规则")
-
-    # 测试用例2：利润不达标的订单
-    test_order_2 = {
-        'city': '北京',
-        'cinema_name': '万达影城CBD店',
-        'hall_type': 'IMAX',
-        'bidding_price': 55.0  # 利润只有5元，不达标
-    }
-
-    print(f"\n📝 测试订单2: {test_order_2}")
-    result_2 = engine.check_order(test_order_2)
-    if result_2:
-        print(f"✅ 匹配成功！")
-        print(f"   规则名称: {result_2['rule_name']}")
-        print(f"   计算利润: {result_2['profit']:.2f}元")
-    else:
-        print("❌ 未匹配到合适的规则（可能是利润不达标）")
-
-    # 测试用例3：城市不匹配的订单
-    test_order_3 = {
-        'city': '上海',
-        'cinema_name': '万达影城CBD店',
-        'hall_type': 'IMAX',
-        'bidding_price': 60.0
-    }
-
-    print(f"\n📝 测试订单3: {test_order_3}")
-    result_3 = engine.check_order(test_order_3)
-    if result_3:
-        print(f"✅ 匹配成功！")
-        print(f"   规则名称: {result_3['rule_name']}")
-        print(f"   计算利润: {result_3['profit']:.2f}元")
-    else:
-        print("❌ 未匹配到合适的规则（城市不匹配）")
-
 
 if __name__ == "__main__":
-    print("智能抢单决策助手启动中...")
+    # 创建PyQt6应用程序
+    app = QApplication(sys.argv)
 
-    # 测试依赖库导入
-    if test_imports():
-        # 测试RuleEngine类
-        test_rule_engine()
+    # 创建主窗口
+    window = MainWindow()
 
-        # 测试check_order方法
-        test_check_order()
+    # 显示窗口
+    window.show()
+
+    # 启动事件循环
+    sys.exit(app.exec())
