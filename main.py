@@ -1029,6 +1029,83 @@ class RuleEngine:
 
 
 if __name__ == "__main__":
+    # 创建新的模拟数据，用于测试多票利润计算逻辑
+    mock_orders_with_seats = [
+        # 测试用例A (多票高利润单)
+        {
+            'order_id': 'multi_ticket_high_profit',
+            'city': '北京',
+            'cinema_name': '北京CBD万达影城',
+            'hall_type': 'IMAX厅',
+            'bidding_price': 55.0,
+            'seat_count': 4
+        },
+        # 测试用例B (多票利润不足单)
+        {
+            'order_id': 'multi_ticket_low_profit',
+            'city': '北京',
+            'cinema_name': '北京CBD万达影城',
+            'hall_type': 'IMAX厅',
+            'bidding_price': 51.0,
+            'seat_count': 5
+        },
+        # 测试用例C (单票高利润单)
+        {
+            'order_id': 'single_ticket_high_profit',
+            'city': '北京',
+            'cinema_name': '北京CBD万达影城',
+            'hall_type': 'IMAX厅',
+            'bidding_price': 60.0,
+            'seat_count': 1
+        }
+    ]
+
+    print("=" * 60)
+    print("🧪 开始测试新版多票利润计算逻辑")
+    print("=" * 60)
+
+    # 实例化规则引擎
+    engine = RuleEngine('rules.json')
+
+    # 遍历测试订单
+    for i, order in enumerate(mock_orders_with_seats, 1):
+        print(f"\n📋 测试用例 {i}: {order['order_id']}")
+        print(f"   城市: {order['city']}")
+        print(f"   影院: {order['cinema_name']}")
+        print(f"   影厅: {order['hall_type']}")
+        print(f"   竞标价: {order['bidding_price']:.1f}元")
+        print(f"   票数: {order['seat_count']}张")
+
+        # 调用规则引擎检查订单
+        result = engine.check_order(order)
+
+        if result is not None:
+            # 匹配成功
+            print(f"   ✅ 匹配成功！")
+            print(f"   📊 总利润: {result['total_profit']:.1f}元")
+            print(f"   🎫 票数: {result['seat_count']}张")
+            print(f"   📝 匹配规则: {result['rule_name']}")
+
+            # 计算单票利润用于验证
+            single_profit = result['total_profit'] / result['seat_count']
+            print(f"   💰 单票利润: {single_profit:.1f}元")
+        else:
+            # 匹配失败，分析原因
+            print(f"   ❌ 忽略订单")
+
+            # 模拟计算总利润来说明原因
+            # 假设成本价为50元（这是规则中的典型值）
+            assumed_cost = 50.0
+            single_profit = order['bidding_price'] - assumed_cost
+            total_profit = single_profit * order['seat_count']
+
+            print(f"   📊 计算总利润: ({order['bidding_price']:.1f} - {assumed_cost:.1f}) × {order['seat_count']} = {total_profit:.1f}元")
+            print(f"   ⚠️  原因: 总利润{total_profit:.1f}元未达到最低利润阈值")
+
+    print("\n" + "=" * 60)
+    print("🧪 测试完成")
+    print("=" * 60)
+
     # 创建PyQt6应用程序
     app = QApplication(sys.argv)
 
