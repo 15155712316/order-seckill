@@ -7,12 +7,13 @@ import asyncio
 import aiohttp
 import random
 import time
+import uuid
 from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QWidget, QTabWidget,
                              QListWidget, QPushButton, QSplitter, QFormLayout,
                              QLineEdit, QRadioButton, QCheckBox,
-                             QHBoxLayout, QButtonGroup, QLabel)
+                             QHBoxLayout, QButtonGroup, QLabel, QMessageBox)
 from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt
 from PyQt6.QtGui import QColor
 
@@ -23,10 +24,15 @@ class Worker(QObject):
     # 定义自定义信号，用于向主窗口发送抢单机会数据
     new_opportunity = pyqtSignal(dict)
 
+    def __init__(self, engine):
+        """初始化Worker，接受规则引擎实例"""
+        super().__init__()
+        self.engine = engine
+
     def run(self):
         """后台任务主方法"""
-        # 实例化规则引擎
-        engine = RuleEngine('rules.json')
+        # 使用传入的规则引擎实例
+        engine = self.engine
 
         async def main_loop():
             """主要的异步循环，模拟持续抓取订单"""
@@ -107,6 +113,15 @@ class MainWindow(QMainWindow):
         self.create_monitoring_tab()
         self.create_editor_tab()
 
+        # 创建规则引擎实例
+        self.engine = RuleEngine('rules.json')
+
+        # 连接信号与槽
+        self.connect_signals()
+
+        # 加载规则到编辑器
+        self.load_rules_to_editor()
+
         # 启动后台工作线程
         self.init_worker_thread()
 
@@ -186,7 +201,7 @@ class MainWindow(QMainWindow):
         # 按钮组
         self.btn_add_rule = QPushButton("新增规则")
         self.btn_delete_rule = QPushButton("删除规则")
-        self.btn_save_rules = QPushButton("保存所有规则")
+        self.btn_save_rules = QPushButton("保存")
 
         # 设置按钮样式
         for btn in [self.btn_add_rule, self.btn_delete_rule, self.btn_save_rules]:
@@ -198,8 +213,8 @@ class MainWindow(QMainWindow):
 
         # 连接按钮信号
         self.btn_add_rule.clicked.connect(self.add_new_rule)
-        self.btn_delete_rule.clicked.connect(self.delete_rule)
-        self.btn_save_rules.clicked.connect(self.save_all_rules)
+        self.btn_delete_rule.clicked.connect(self.delete_selected_rule)
+        self.btn_save_rules.clicked.connect(self.save_current_rule)
 
         left_widget.setLayout(left_layout)
         return left_widget
@@ -209,18 +224,28 @@ class MainWindow(QMainWindow):
         right_widget = QWidget()
         form_layout = QFormLayout()
 
+        # 用户引导标签
+        self.guide_label = QLabel("请从左侧选择规则进行编辑，或点击'新增规则'。")
+        self.guide_label.setStyleSheet("color: gray; font-style: italic; padding: 20px; text-align: center;")
+        self.guide_label.setWordWrap(True)
+        form_layout.addRow("", self.guide_label)
+
+        # 创建表单控件容器
+        self.form_container = QWidget()
+        form_container_layout = QFormLayout()
+
         # 规则名称
         self.edit_rule_name = QLineEdit()
-        form_layout.addRow("规则名称:", self.edit_rule_name)
+        form_container_layout.addRow("规则名称:", self.edit_rule_name)
 
         # 城市
         self.edit_city = QLineEdit()
-        form_layout.addRow("城市:", self.edit_city)
+        form_container_layout.addRow("城市:", self.edit_city)
 
         # 影院关键词
         self.edit_cinema_keywords = QLineEdit()
         self.edit_cinema_keywords.setPlaceholderText("多个关键词用逗号分隔，如：万达,CBD")
-        form_layout.addRow("影院关键词:", self.edit_cinema_keywords)
+        form_container_layout.addRow("影院关键词:", self.edit_cinema_keywords)
 
         # 影厅逻辑模式
         hall_mode_widget = QWidget()
@@ -245,51 +270,363 @@ class MainWindow(QMainWindow):
         hall_mode_layout.addStretch()
 
         hall_mode_widget.setLayout(hall_mode_layout)
-        form_layout.addRow("影厅逻辑模式:", hall_mode_widget)
+        form_container_layout.addRow("影厅逻辑模式:", hall_mode_widget)
 
         # 影厅列表
         self.edit_hall_list = QLineEdit()
         self.edit_hall_list.setPlaceholderText("多个影厅用逗号分隔，如：IMAX,激光IMAX")
-        form_layout.addRow("影厅列表:", self.edit_hall_list)
+        form_container_layout.addRow("影厅列表:", self.edit_hall_list)
 
         # 成本价
         self.edit_cost = QLineEdit()
         self.edit_cost.setPlaceholderText("例如：50.0")
-        form_layout.addRow("成本价:", self.edit_cost)
+        form_container_layout.addRow("成本价:", self.edit_cost)
 
         # 最低利润
         self.edit_min_profit = QLineEdit()
         self.edit_min_profit.setPlaceholderText("例如：8.0")
-        form_layout.addRow("最低利润:", self.edit_min_profit)
+        form_container_layout.addRow("最低利润:", self.edit_min_profit)
 
         # 启用此规则
         self.checkbox_enabled = QCheckBox("启用此规则")
         self.checkbox_enabled.setChecked(True)
-        form_layout.addRow("", self.checkbox_enabled)
+        form_container_layout.addRow("", self.checkbox_enabled)
+
+        # 设置表单容器布局
+        self.form_container.setLayout(form_container_layout)
+
+        # 将表单容器添加到主布局
+        form_layout.addRow("", self.form_container)
+
+        # 初始状态：显示引导标签，隐藏表单容器
+        self.guide_label.show()
+        self.form_container.hide()
 
         right_widget.setLayout(form_layout)
         return right_widget
 
     def add_new_rule(self):
         """添加新规则"""
-        print("添加新规则")
-        # TODO: 实现添加新规则逻辑
+        try:
+            # 隐藏引导标签，显示表单容器
+            self.guide_label.hide()
+            self.form_container.show()
 
-    def delete_rule(self):
-        """删除规则"""
-        print("删除规则")
-        # TODO: 实现删除规则逻辑
+            # 清空右侧表单，准备输入新规则
+            self.edit_rule_name.clear()
+            self.edit_city.clear()
+            self.edit_cinema_keywords.clear()
+            self.edit_hall_list.clear()
+            self.edit_cost.clear()
+            self.edit_min_profit.clear()
 
-    def save_all_rules(self):
-        """保存所有规则"""
-        print("保存所有规则")
-        # TODO: 实现保存规则逻辑
+            # 设置默认值
+            self.radio_include.setChecked(True)
+            self.checkbox_enabled.setChecked(True)
+
+            # 清除列表选择，确保currentItem为None
+            self.rule_list.clearSelection()
+            self.rule_list.setCurrentItem(None)
+
+            print("✅ 已清空表单，可以输入新规则")
+            self.statusBar().showMessage("请填写新规则信息，然后点击'保存'")
+
+        except Exception as e:
+            print(f"❌ 添加新规则时出错: {e}")
+
+    def delete_selected_rule(self):
+        """删除选中的规则"""
+        try:
+            current_item = self.rule_list.currentItem()
+            if current_item is None:
+                self.statusBar().showMessage("请先选择要删除的规则")
+                return
+
+            rule_name = current_item.text()
+
+            # 弹出确认对话框
+            reply = QMessageBox.question(
+                self,
+                "确认删除",
+                f"您确定要删除规则 '{rule_name}' 吗？此操作无法撤销。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+
+            # 如果用户点击了No，直接返回
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+
+            # 从内存中删除规则
+            self.engine.rules = [rule for rule in self.engine.rules
+                               if rule.get('rule_name') != rule_name]
+
+            # 保存到文件并刷新UI
+            self.save_rules_to_file()
+            self.load_rules_to_editor()
+
+            print(f"✅ 已删除规则: {rule_name}")
+            self.statusBar().showMessage(f"规则 '{rule_name}' 已删除")
+
+        except Exception as e:
+            print(f"❌ 删除规则时出错: {e}")
+            self.statusBar().showMessage("删除规则失败")
+
+    def save_current_rule(self):
+        """应用并保存当前修改"""
+        try:
+            # a. 数据获取与校验
+            rule_name = self.edit_rule_name.text().strip()
+            city = self.edit_city.text().strip()
+            cinema_keywords_text = self.edit_cinema_keywords.text().strip()
+            hall_list_text = self.edit_hall_list.text().strip()
+            cost_text = self.edit_cost.text().strip()
+            min_profit_text = self.edit_min_profit.text().strip()
+
+            # 严格的输入校验
+            if not rule_name:
+                QMessageBox.warning(self, "输入错误", "规则名称不能为空！")
+                return
+
+            # 验证数字字段
+            try:
+                cost = float(cost_text) if cost_text else 0.0
+                min_profit = float(min_profit_text) if min_profit_text else 0.0
+            except ValueError:
+                QMessageBox.warning(self, "输入错误", "成本价和最低利润必须是有效的数字！")
+                return
+
+            # 处理关键词列表
+            cinema_keywords = [kw.strip() for kw in cinema_keywords_text.split(',') if kw.strip()]
+
+            # 处理影厅列表
+            hall_list = [hall.strip() for hall in hall_list_text.split(',') if hall.strip()]
+
+            # 获取影厅模式
+            if self.radio_all.isChecked():
+                hall_mode = 'ALL'
+            elif self.radio_include.isChecked():
+                hall_mode = 'INCLUDE'
+            else:
+                hall_mode = 'EXCLUDE'
+
+            # b. 新增/更新逻辑判断
+            current_item = self.rule_list.currentItem()
+
+            if current_item:
+                # 更新模式
+                old_rule_name = current_item.text()
+
+                # 如果规则名称发生变化，需要检查新名称是否已存在
+                if rule_name != old_rule_name:
+                    for rule in self.engine.rules:
+                        if rule.get('rule_name') == rule_name:
+                            QMessageBox.warning(self, "规则名称冲突", f"规则名称 '{rule_name}' 已存在，请使用其他名称！")
+                            return
+
+                # 找到并更新规则
+                for i, rule in enumerate(self.engine.rules):
+                    if rule.get('rule_name') == old_rule_name:
+                        # 构建更新后的规则
+                        updated_rule = {
+                            'rule_id': rule.get('rule_id', str(uuid.uuid4())),
+                            'rule_name': rule_name,
+                            'enabled': self.checkbox_enabled.isChecked(),
+                            'match_conditions': {
+                                'city': city,
+                                'cinema_keywords': cinema_keywords
+                            },
+                            'hall_logic': {
+                                'mode': hall_mode,
+                                'hall_list': hall_list,
+                                'cost': cost
+                            },
+                            'profit_logic': {
+                                'min_profit_threshold': min_profit
+                            }
+                        }
+                        self.engine.rules[i] = updated_rule
+                        break
+
+                print(f"✅ 已更新规则: {rule_name}")
+
+            else:
+                # 新增模式
+                # 执行规则名唯一性校验
+                for rule in self.engine.rules:
+                    if rule.get('rule_name') == rule_name:
+                        QMessageBox.warning(self, "规则名称冲突", f"规则名称 '{rule_name}' 已存在，请使用其他名称！")
+                        return
+
+                # 创建新规则
+                new_rule = {
+                    'rule_id': str(uuid.uuid4()),
+                    'rule_name': rule_name,
+                    'enabled': self.checkbox_enabled.isChecked(),
+                    'match_conditions': {
+                        'city': city,
+                        'cinema_keywords': cinema_keywords
+                    },
+                    'hall_logic': {
+                        'mode': hall_mode,
+                        'hall_list': hall_list,
+                        'cost': cost
+                    },
+                    'profit_logic': {
+                        'min_profit_threshold': min_profit
+                    }
+                }
+
+                self.engine.rules.append(new_rule)
+                print(f"✅ 已新增规则: {rule_name}")
+
+            # 重新处理hall_set（为规则引擎预处理）
+            for rule in self.engine.rules:
+                if 'hall_logic' in rule and 'hall_list' in rule['hall_logic']:
+                    hall_list = rule['hall_logic']['hall_list']
+                    rule['hall_logic']['hall_set'] = set(hall_list)
+
+            # c. 写入与刷新
+            self.save_rules_to_file()
+            self.load_rules_to_editor()
+
+            # 在状态栏给出成功提示
+            self.statusBar().showMessage("保存成功！")
+
+        except Exception as e:
+            print(f"❌ 保存规则时出错: {e}")
+            QMessageBox.warning(self, "保存失败", f"保存规则时发生错误：{str(e)}")
+            self.statusBar().showMessage("保存失败")
+
+    def save_rules_to_file(self):
+        """将规则保存到文件"""
+        try:
+            # 准备保存的数据（移除hall_set，因为它是运行时生成的）
+            rules_to_save = []
+            for rule in self.engine.rules:
+                rule_copy = rule.copy()
+                if 'hall_logic' in rule_copy and 'hall_set' in rule_copy['hall_logic']:
+                    hall_logic_copy = rule_copy['hall_logic'].copy()
+                    del hall_logic_copy['hall_set']
+                    rule_copy['hall_logic'] = hall_logic_copy
+                rules_to_save.append(rule_copy)
+
+            # 写入文件
+            with open('rules.json', 'w', encoding='utf-8') as f:
+                json.dump(rules_to_save, f, ensure_ascii=False, indent=2)
+
+            print("✅ 规则已保存到文件")
+
+        except Exception as e:
+            print(f"❌ 保存规则到文件时出错: {e}")
+            raise
+
+    def connect_signals(self):
+        """连接信号与槽"""
+        # 连接规则列表选择变化信号
+        self.rule_list.currentItemChanged.connect(self.display_rule_details)
+
+        # 连接按钮信号（这些在create_left_panel中已经连接，这里重新确认）
+        self.btn_add_rule.clicked.connect(self.add_new_rule)
+        self.btn_delete_rule.clicked.connect(self.delete_selected_rule)
+        self.btn_save_rules.clicked.connect(self.save_current_rule)
+
+    def load_rules_to_editor(self):
+        """加载规则到编辑器"""
+        try:
+            # 清空规则列表
+            self.rule_list.clear()
+
+            # 遍历规则，添加到列表中
+            for rule in self.engine.rules:
+                rule_name = rule.get('rule_name', '未命名规则')
+                self.rule_list.addItem(rule_name)
+
+            # 如果有规则，选择第一个
+            if self.rule_list.count() > 0:
+                self.rule_list.setCurrentRow(0)
+
+            print(f"✅ 已加载 {len(self.engine.rules)} 条规则到编辑器")
+
+        except Exception as e:
+            print(f"❌ 加载规则到编辑器时出错: {e}")
+
+    def display_rule_details(self, current_item):
+        """显示规则详情"""
+        if current_item is None:
+            # 显示引导标签，隐藏表单容器
+            self.guide_label.show()
+            self.form_container.hide()
+            return
+
+        try:
+            # 隐藏引导标签，显示表单容器
+            self.guide_label.hide()
+            self.form_container.show()
+
+            rule_name = current_item.text()
+
+            # 在规则列表中找到对应的规则
+            selected_rule = None
+            for rule in self.engine.rules:
+                if rule.get('rule_name') == rule_name:
+                    selected_rule = rule
+                    break
+
+            if selected_rule is None:
+                print(f"❌ 未找到规则: {rule_name}")
+                return
+
+            # 填充表单数据
+            self.edit_rule_name.setText(selected_rule.get('rule_name', ''))
+
+            # 匹配条件
+            match_conditions = selected_rule.get('match_conditions', {})
+            self.edit_city.setText(match_conditions.get('city', ''))
+
+            # 影院关键词（列表转字符串）
+            keywords = match_conditions.get('cinema_keywords', [])
+            self.edit_cinema_keywords.setText(','.join(keywords))
+
+            # 影厅逻辑
+            hall_logic = selected_rule.get('hall_logic', {})
+            mode = hall_logic.get('mode', 'INCLUDE').upper()
+
+            # 设置单选按钮
+            if mode == 'ALL':
+                self.radio_all.setChecked(True)
+            elif mode == 'INCLUDE':
+                self.radio_include.setChecked(True)
+            elif mode == 'EXCLUDE':
+                self.radio_exclude.setChecked(True)
+
+            # 影厅列表
+            hall_list = hall_logic.get('hall_list', [])
+            self.edit_hall_list.setText(','.join(hall_list))
+
+            # 成本价
+            cost = hall_logic.get('cost', 0)
+            self.edit_cost.setText(str(cost))
+
+            # 最低利润
+            profit_logic = selected_rule.get('profit_logic', {})
+            min_profit = profit_logic.get('min_profit_threshold', 0)
+            self.edit_min_profit.setText(str(min_profit))
+
+            # 启用状态
+            enabled = selected_rule.get('enabled', True)
+            self.checkbox_enabled.setChecked(enabled)
+
+            print(f"✅ 已显示规则详情: {rule_name}")
+
+        except Exception as e:
+            print(f"❌ 显示规则详情时出错: {e}")
 
     def init_worker_thread(self):
         """初始化后台工作线程"""
         # 创建线程和工作对象
         self.thread = QThread()
-        self.worker = Worker()
+        self.worker = Worker(self.engine)
 
         # 将worker移动到新线程中
         self.worker.moveToThread(self.thread)

@@ -1,19 +1,25 @@
 [
   {
     "rule_id": "rule_001",
-    "rule_name": "北京万达IMAX高利润单",
+    "rule_name": "北京万达IMAX高利润",
     "enabled": true,
     "match_conditions": {
       "city": "北京",
-      "cinema_keywords": ["万达", "CBD"]
+      "cinema_keywords": [
+        "万达",
+        "CBD"
+      ]
     },
     "hall_logic": {
       "mode": "INCLUDE",
-      "hall_list": ["IMAX", "激光IMAX"],
+      "hall_list": [
+        "IMAX",
+        "激光IMAX"
+      ],
       "cost": 50.0
     },
     "profit_logic": {
-      "min_profit_threshold": 8.0
+      "min_profit_threshold": 31.0
     }
   }
 ]
