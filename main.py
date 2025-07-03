@@ -24,7 +24,7 @@ from PyQt6.QtGui import QColor
 
 # 配置日志系统
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # 改为DEBUG级别以查看详细调试信息
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler("app.log", encoding='utf-8'),  # 输出到文件
@@ -110,226 +110,229 @@ class DataFetcher:
         # 用于去重的双端队列，最多保存500个已见过的订单ID
         self.seen_order_ids = collections.deque(maxlen=500)
 
-        # 计数器，用于模拟不同的API返回
-        self.fetch_count = 0
-
-        # 总订单池 - 包含10条不同的订单用于测试
-        self.MOCK_TOTAL_ORDERS = [
-            {
-                'order_id': 'order_001',
-                'city': '北京',
-                'cinema_name': '北京CBD万达影城',
-                'hall_type': 'IMAX厅',
-                'bidding_price': 65.0,
-                'seat_count': 2,
-                'show_time': '14:30',
-                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            },
-            {
-                'order_id': 'order_002',
-                'city': '上海',
-                'cinema_name': '上海万达影城',
-                'hall_type': '普通厅',
-                'bidding_price': 45.0,
-                'seat_count': 1,
-                'show_time': '16:00',
-                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            },
-            {
-                'order_id': 'order_003',
-                'city': '北京',
-                'cinema_name': '北京CBD万达影城',
-                'hall_type': '激光IMAX厅',
-                'bidding_price': 70.0,
-                'seat_count': 3,
-                'show_time': '19:30',
-                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            },
-            {
-                'order_id': 'order_004',
-                'city': '广州',
-                'cinema_name': '广州CBD万达影城',
-                'hall_type': 'IMAX厅',
-                'bidding_price': 60.0,
-                'seat_count': 1,
-                'show_time': '20:00',
-                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            },
-            {
-                'order_id': 'order_005',
-                'city': '深圳',
-                'cinema_name': '深圳万达影城',
-                'hall_type': '4DX厅',
-                'bidding_price': 55.0,
-                'seat_count': 2,
-                'show_time': '21:30',
-                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            },
-            {
-                'order_id': 'order_006',
-                'city': '北京',
-                'cinema_name': '北京CBD万达影城',
-                'hall_type': 'VIP厅',
-                'bidding_price': 80.0,
-                'seat_count': 1,
-                'show_time': '15:00',
-                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            },
-            {
-                'order_id': 'order_007',
-                'city': '杭州',
-                'cinema_name': '杭州万达影城',
-                'hall_type': 'IMAX厅',
-                'bidding_price': 58.0,
-                'seat_count': 4,
-                'show_time': '17:30',
-                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            },
-            {
-                'order_id': 'order_008',
-                'city': '成都',
-                'cinema_name': '成都CBD万达影城',
-                'hall_type': '激光IMAX厅',
-                'bidding_price': 62.0,
-                'seat_count': 2,
-                'show_time': '18:00',
-                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            },
-            {
-                'order_id': 'order_009',
-                'city': '武汉',
-                'cinema_name': '武汉万达影城',
-                'hall_type': 'IMAX厅',
-                'bidding_price': 56.0,
-                'seat_count': 3,
-                'show_time': '19:00',
-                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            },
-            {
-                'order_id': 'order_010',
-                'city': '南京',
-                'cinema_name': '南京CBD万达影城',
-                'hall_type': '普通厅',
-                'bidding_price': 48.0,
-                'seat_count': 1,
-                'show_time': '20:30',
-                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-        ]
-
     async def fetch_latest_orders(self):
         """
-        获取最新订单数据（模拟API调用）
+        获取最新订单数据（真实API调用）
 
         Returns:
             list: 经过去重的新订单列表
         """
-        # 创建解密器实例（使用模拟token）
-        decryptor = Decryptor("test_token_123")
+        # 定义API参数
+        url = 'https://hahapiao.cn/api/Synchro/pcToList'
 
-        # 模拟加密的API返回数据
-        if self.fetch_count == 0:
-            # 第一次：模拟返回加密的前5条订单数据
-            mock_orders_data = self.MOCK_TOTAL_ORDERS[0:5]
-            # 模拟加密数据（实际应该是从API获取的加密字符串）
-            encrypted_data = self._simulate_encrypted_data(mock_orders_data)
-            logging.debug("模拟API返回：加密的前5条订单数据")
-        elif self.fetch_count == 1:
-            # 第二次：模拟返回加密的第3到第8条订单数据
-            mock_orders_data = self.MOCK_TOTAL_ORDERS[2:8]
-            encrypted_data = self._simulate_encrypted_data(mock_orders_data)
-            logging.debug("模拟API返回：加密的第3到第8条订单数据")
-        elif self.fetch_count == 2:
-            # 第三次：模拟返回加密的最后3条订单数据
-            mock_orders_data = self.MOCK_TOTAL_ORDERS[7:10]
-            encrypted_data = self._simulate_encrypted_data(mock_orders_data)
-            logging.debug("模拟API返回：加密的最后3条订单数据")
-        else:
-            # 其他情况：返回空的加密数据
-            encrypted_data = self._simulate_encrypted_data([])
-            logging.debug("模拟API返回：空的加密数据（测试结束）")
+        # 创建请求头（包含token和cookie等关键信息）
+        headers = {
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+            'Cache-Control': 'no-cache',
+            'Connection': 'keep-alive',
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+            'Origin': 'https://hahapiao.cn',
+            'Pragma': 'no-cache',
+            'Referer': 'https://hahapiao.cn/pc/index',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'same-origin',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+            'X-Requested-With': 'XMLHttpRequest',
+            'token': '64932f01040374d3a7dc9438a48c5178',  # 需要替换为真实token
+            'Cookie': '_c_WBKFRo=CbkeIVy2jCMFQKiSKiNZIOjL0rfGmOzcfROYTyCm; PHPSESSID=e2vnuucrt8qnts3ul9b13aabr3'  # 需要替换为真实cookie
+        }
+
+        # 创建请求数据
+        data = 'limit=200'
 
         try:
-            # 解密API返回的数据
-            decrypted_json_str = decryptor.decrypt(encrypted_data)
+            # 执行真实API请求
+            async with aiohttp.ClientSession(headers=headers) as session:
+                logging.info("正在请求真实API...")
+                async with session.post(url, data=data) as response:
+                    # 获取返回的响应文本
+                    response_text = await response.text()
+                    logging.info(f"API响应状态码: {response.status}")
+                    logging.debug(f"API返回响应长度: {len(response_text)}")
 
-            # 将解密后的JSON字符串转换为Python对象
-            raw_orders = json.loads(decrypted_json_str)
+                    # 打印原始响应（用于调试）
+                    logging.debug(f"原始API响应: {response_text[:200]}...")  # 只打印前200字符
 
-            logging.debug(f"成功解密并解析数据，获得 {len(raw_orders)} 条订单")
+            # 解析JSON响应并提取加密数据
+            try:
+                # 1. 解析JSON响应
+                logging.info("解析API返回的JSON响应...")
+                api_response = json.loads(response_text)
 
+                # 检查响应状态
+                if api_response.get('status') != 200 or api_response.get('code') != 200:
+                    logging.error(f"API返回错误状态: {api_response}")
+                    return []
+
+                # 2. 提取data字段中的加密内容
+                encrypted_data = api_response.get('data', '')
+                if not encrypted_data:
+                    logging.warning("API响应中没有找到data字段或data为空")
+                    return []
+
+                logging.info(f"成功提取加密数据，长度: {len(encrypted_data)}")
+                logging.debug(f"加密数据内容: {encrypted_data[:100]}...")  # 只打印前100字符
+
+            except json.JSONDecodeError as e:
+                logging.error(f"解析API响应JSON失败: {e}")
+                logging.error(f"原始响应内容: {response_text}")
+                return []
+
+            # 调用解密器
+            # 创建Decryptor实例，使用真实token（需要从headers中提取）
+            real_token = headers.get('token', 'default_token')
+            decryptor = Decryptor(real_token)
+
+            # 关键解密步骤 - 增强调试版本
+            logging.info("🔍 开始调试解密过程...")
+
+            # 尝试多种可能的解密参数组合
+            decrypt_attempts = [
+                {"suffix1": "piaofan@123", "suffix2": "piaofan@456", "name": "原始参数"},
+                {"suffix1": "piaofan123", "suffix2": "piaofan456", "name": "无@符号"},
+                {"suffix1": "123", "suffix2": "456", "name": "仅数字"},
+                {"suffix1": "", "suffix2": "", "name": "仅token"},
+                {"suffix1": "piaofan", "suffix2": "piaofan", "name": "仅piaofan"},
+                # 新增更多可能的组合
+                {"suffix1": "@123", "suffix2": "@456", "name": "仅@数字"},
+                {"suffix1": "piaofan@", "suffix2": "piaofan@", "name": "piaofan@"},
+                {"suffix1": "fan@123", "suffix2": "fan@456", "name": "fan@数字"},
+            ]
+
+            for attempt in decrypt_attempts:
+                try:
+                    logging.info(f"🧪 尝试解密方案: {attempt['name']}")
+
+                    # 生成密钥和IV
+                    key_string = f"{real_token}{attempt['suffix1']}"
+                    iv_string = f"{real_token}{attempt['suffix2']}"
+
+                    key = hashlib.md5(key_string.encode('utf-8')).digest()
+                    iv = hashlib.md5(iv_string.encode('utf-8')).digest()[:16]
+
+                    # 打印调试信息
+                    logging.debug(f"Token: {real_token}")
+                    logging.debug(f"Key字符串: {key_string}")
+                    logging.debug(f"IV字符串: {iv_string}")
+                    logging.debug(f"Key (hex): {key.hex()}")
+                    logging.debug(f"IV (hex): {iv.hex()}")
+
+                    # Base64解码
+                    decoded_data = base64.b64decode(encrypted_data)
+                    logging.debug(f"Base64解码后长度: {len(decoded_data)}")
+
+                    # 尝试多种AES模式
+                    modes_to_try = [
+                        (AES.MODE_CBC, "CBC"),
+                        (AES.MODE_ECB, "ECB"),
+                        (AES.MODE_CFB, "CFB"),
+                        (AES.MODE_OFB, "OFB"),
+                    ]
+
+                    for mode, mode_name in modes_to_try:
+                        try:
+                            logging.debug(f"尝试AES模式: {mode_name}")
+
+                            # AES解密
+                            if mode == AES.MODE_ECB:
+                                cipher = AES.new(key, mode)
+                            else:
+                                cipher = AES.new(key, mode, iv)
+
+                            decrypted_padded_data = cipher.decrypt(decoded_data)
+                            logging.debug(f"解密后数据长度: {len(decrypted_padded_data)}")
+
+                            # 尝试不同的填充处理方式
+                            padding_methods = [
+                                ("PKCS7", lambda data: data[:-data[-1]] if data[-1] <= 16 and data[-1] > 0 else data),
+                                ("无填充", lambda data: data),
+                                ("零填充", lambda data: data.rstrip(b'\x00')),
+                            ]
+
+                            for pad_name, pad_func in padding_methods:
+                                try:
+                                    logging.debug(f"尝试填充方式: {pad_name}")
+
+                                    # 去除填充
+                                    decrypted_data_bytes = pad_func(decrypted_padded_data)
+                                    logging.debug(f"去填充后数据长度: {len(decrypted_data_bytes)}")
+
+                                    # 打印前20字节用于调试
+                                    if len(decrypted_data_bytes) >= 20:
+                                        hex_preview = decrypted_data_bytes[:20].hex()
+                                        logging.debug(f"解密后前20字节 (hex): {hex_preview}")
+
+                                    # 尝试UTF-8解码
+                                    decrypted_json_str = decrypted_data_bytes.decode('utf-8')
+                                    logging.debug(f"UTF-8解码成功，字符串长度: {len(decrypted_json_str)}")
+
+                                    # 尝试JSON解析
+                                    decrypted_data = json.loads(decrypted_json_str)
+
+                                    # 成功！
+                                    logging.info(f"🎉 解密成功！使用方案: {attempt['name']}, 模式: {mode_name}, 填充: {pad_name}")
+                                    logging.info(f"解密后数据类型: {type(decrypted_data)}")
+                                    logging.info(f"解密后数据内容: {json.dumps(decrypted_data, ensure_ascii=False, indent=2)}")
+
+                                    # 暂时中止后续处理，专注于调试解密
+                                    logging.info("解密调试完成，暂时返回空列表")
+                                    return []
+
+                                except UnicodeDecodeError as e:
+                                    logging.debug(f"填充方式 '{pad_name}' UTF-8解码失败: {e}")
+                                    # 打印解码失败的字节数据
+                                    if len(decrypted_data_bytes) >= 20:
+                                        hex_preview = decrypted_data_bytes[:20].hex()
+                                        logging.debug(f"解码失败的前20字节 (hex): {hex_preview}")
+                                    continue
+                                except json.JSONDecodeError as e:
+                                    logging.debug(f"填充方式 '{pad_name}' JSON解析失败: {e}")
+                                    logging.debug(f"解码成功但JSON无效的字符串前100字符: {decrypted_json_str[:100]}")
+                                    continue
+                                except Exception as e:
+                                    logging.debug(f"填充方式 '{pad_name}' 异常: {e}")
+                                    continue
+
+                        except Exception as e:
+                            logging.debug(f"AES模式 '{mode_name}' 失败: {e}")
+                            continue
+
+                    # 解密成功！
+                    logging.info(f"🎉 解密成功！使用方案: {attempt['name']}")
+                    logging.info(f"解密后数据类型: {type(decrypted_data)}")
+                    logging.info(f"解密后数据内容: {json.dumps(decrypted_data, ensure_ascii=False, indent=2)}")
+
+                    # 暂时中止后续处理，专注于调试解密
+                    logging.info("解密调试完成，暂时返回空列表")
+                    return []
+
+                except UnicodeDecodeError as e:
+                    logging.warning(f"方案 '{attempt['name']}' UTF-8解码失败: {e}")
+                    # 打印前20个字节的十六进制值
+                    if 'decrypted_data_bytes' in locals():
+                        hex_preview = decrypted_data_bytes[:20].hex()
+                        logging.debug(f"解密后前20字节 (hex): {hex_preview}")
+                except json.JSONDecodeError as e:
+                    logging.warning(f"方案 '{attempt['name']}' JSON解析失败: {e}")
+                except Exception as e:
+                    logging.warning(f"方案 '{attempt['name']}' 解密失败: {e}")
+
+            # 所有方案都失败
+            logging.error("🚨 所有解密方案都失败了！")
+            logging.error(f"原始加密数据长度: {len(encrypted_data)}")
+            logging.error(f"原始加密数据前100字符: {encrypted_data[:100]}")
+            return []
+
+        except aiohttp.ClientError as e:
+            logging.error(f"🚨 API请求失败: {e}")
+            return []
         except Exception as e:
-            logging.error(f"解密或解析数据失败: {e}")
-            raw_orders = []
+            logging.error(f"🚨 获取订单数据时发生未知错误: {e}")
+            return []
 
-        # 去重逻辑（保留原有逻辑）
-        new_orders = []
 
-        for order in raw_orders:
-            order_id = order.get('order_id')
-
-            # 检查订单ID是否已经见过
-            if order_id not in self.seen_order_ids:
-                # 新订单：添加到结果列表并记录ID
-                new_orders.append(order)
-                self.seen_order_ids.append(order_id)
-                logging.debug(f"新订单: {order_id}")
-            else:
-                logging.debug(f"重复订单: {order_id} (已跳过)")
-
-        # 记录统计信息
-        if len(raw_orders) > 0:
-            logging.info(f"API返回 {len(raw_orders)} 条订单，筛选出 {len(new_orders)} 条新订单")
-
-        # 增加计数器
-        self.fetch_count += 1
-
-        # 模拟网络延迟
-        await asyncio.sleep(0.1)
-
-        return new_orders
-
-    def _simulate_encrypted_data(self, orders_data):
-        """
-        模拟加密数据（用于测试）
-
-        Args:
-            orders_data (list): 要加密的订单数据列表
-
-        Returns:
-            str: Base64编码的加密数据字符串
-        """
-        try:
-            # 将订单数据转换为JSON字符串
-            json_str = json.dumps(orders_data, ensure_ascii=False)
-
-            # 创建加密器（使用相同的token）
-            token = "test_token_123"
-            key_string = f"{token}piaofan@123"
-            key = hashlib.md5(key_string.encode('utf-8')).digest()
-
-            iv_string = f"{token}piaofan@456"
-            iv = hashlib.md5(iv_string.encode('utf-8')).digest()[:16]
-
-            # 对数据进行PKCS7填充
-            data_bytes = json_str.encode('utf-8')
-            padding_length = 16 - (len(data_bytes) % 16)
-            padded_data = data_bytes + bytes([padding_length] * padding_length)
-
-            # 创建AES加密器并加密
-            cipher = AES.new(key, AES.MODE_CBC, iv)
-            encrypted_data = cipher.encrypt(padded_data)
-
-            # Base64编码
-            encrypted_base64 = base64.b64encode(encrypted_data).decode('utf-8')
-
-            logging.debug(f"模拟加密数据，原始长度: {len(json_str)}, 加密后长度: {len(encrypted_base64)}")
-            return encrypted_base64
-
-        except Exception as e:
-            logging.error(f"模拟加密数据失败: {e}")
-            # 返回空数据的加密结果
-            return base64.b64encode(b'[]').decode('utf-8')
 
 
 class Worker(QObject):
