@@ -9,8 +9,163 @@ import random
 import time
 from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTableWidget,
-                             QTableWidgetItem, QVBoxLayout, QWidget)
-from PyQt6.QtCore import QThread, QObject, pyqtSignal
+                             QTableWidgetItem, QVBoxLayout, QWidget, QDialog,
+                             QListWidget, QPushButton, QSplitter, QFormLayout,
+                             QLineEdit, QRadioButton, QCheckBox, QMenuBar,
+                             QHBoxLayout, QButtonGroup, QLabel)
+from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt
+from PyQt6.QtGui import QColor, QAction
+
+
+class RuleEditorWindow(QDialog):
+    """规则编辑器窗口类 - 用于管理和编辑抢单规则"""
+
+    def __init__(self):
+        """初始化规则编辑器窗口"""
+        super().__init__()
+
+        # 设置窗口标题和大小
+        self.setWindowTitle("规则编辑器")
+        self.resize(800, 600)
+
+        # 初始化UI
+        self.init_ui()
+
+    def init_ui(self):
+        """初始化用户界面"""
+        # 创建主分割器（左右分割）
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # 创建左侧部分
+        left_widget = self.create_left_panel()
+
+        # 创建右侧部分
+        right_widget = self.create_right_panel()
+
+        # 添加到分割器
+        main_splitter.addWidget(left_widget)
+        main_splitter.addWidget(right_widget)
+
+        # 设置分割器比例（左侧30%，右侧70%）
+        main_splitter.setSizes([240, 560])
+
+        # 设置主布局
+        main_layout = QVBoxLayout()
+        main_layout.addWidget(main_splitter)
+        self.setLayout(main_layout)
+
+    def create_left_panel(self):
+        """创建左侧面板"""
+        left_widget = QWidget()
+        left_layout = QVBoxLayout()
+
+        # 规则列表
+        self.rule_list = QListWidget()
+        self.rule_list.setMinimumHeight(400)
+        left_layout.addWidget(QLabel("规则列表:"))
+        left_layout.addWidget(self.rule_list)
+
+        # 按钮组
+        self.btn_add_rule = QPushButton("新增规则")
+        self.btn_delete_rule = QPushButton("删除规则")
+        self.btn_save_rules = QPushButton("保存所有规则")
+
+        # 设置按钮样式
+        for btn in [self.btn_add_rule, self.btn_delete_rule, self.btn_save_rules]:
+            btn.setMinimumHeight(35)
+
+        left_layout.addWidget(self.btn_add_rule)
+        left_layout.addWidget(self.btn_delete_rule)
+        left_layout.addWidget(self.btn_save_rules)
+
+        # 连接按钮信号
+        self.btn_add_rule.clicked.connect(self.add_new_rule)
+        self.btn_delete_rule.clicked.connect(self.delete_rule)
+        self.btn_save_rules.clicked.connect(self.save_all_rules)
+
+        left_widget.setLayout(left_layout)
+        return left_widget
+
+    def create_right_panel(self):
+        """创建右侧面板"""
+        right_widget = QWidget()
+        form_layout = QFormLayout()
+
+        # 规则名称
+        self.edit_rule_name = QLineEdit()
+        form_layout.addRow("规则名称:", self.edit_rule_name)
+
+        # 城市
+        self.edit_city = QLineEdit()
+        form_layout.addRow("城市:", self.edit_city)
+
+        # 影院关键词
+        self.edit_cinema_keywords = QLineEdit()
+        self.edit_cinema_keywords.setPlaceholderText("多个关键词用逗号分隔，如：万达,CBD")
+        form_layout.addRow("影院关键词:", self.edit_cinema_keywords)
+
+        # 影厅逻辑模式
+        hall_mode_widget = QWidget()
+        hall_mode_layout = QHBoxLayout()
+
+        self.radio_all = QRadioButton("所有")
+        self.radio_include = QRadioButton("包含")
+        self.radio_exclude = QRadioButton("不包含")
+
+        # 创建按钮组确保单选
+        self.hall_mode_group = QButtonGroup()
+        self.hall_mode_group.addButton(self.radio_all, 0)
+        self.hall_mode_group.addButton(self.radio_include, 1)
+        self.hall_mode_group.addButton(self.radio_exclude, 2)
+
+        # 默认选择"包含"
+        self.radio_include.setChecked(True)
+
+        hall_mode_layout.addWidget(self.radio_all)
+        hall_mode_layout.addWidget(self.radio_include)
+        hall_mode_layout.addWidget(self.radio_exclude)
+        hall_mode_layout.addStretch()
+
+        hall_mode_widget.setLayout(hall_mode_layout)
+        form_layout.addRow("影厅逻辑模式:", hall_mode_widget)
+
+        # 影厅列表
+        self.edit_hall_list = QLineEdit()
+        self.edit_hall_list.setPlaceholderText("多个影厅用逗号分隔，如：IMAX,激光IMAX")
+        form_layout.addRow("影厅列表:", self.edit_hall_list)
+
+        # 成本价
+        self.edit_cost = QLineEdit()
+        self.edit_cost.setPlaceholderText("例如：50.0")
+        form_layout.addRow("成本价:", self.edit_cost)
+
+        # 最低利润
+        self.edit_min_profit = QLineEdit()
+        self.edit_min_profit.setPlaceholderText("例如：8.0")
+        form_layout.addRow("最低利润:", self.edit_min_profit)
+
+        # 启用此规则
+        self.checkbox_enabled = QCheckBox("启用此规则")
+        self.checkbox_enabled.setChecked(True)
+        form_layout.addRow("", self.checkbox_enabled)
+
+        right_widget.setLayout(form_layout)
+        return right_widget
+
+    def add_new_rule(self):
+        """添加新规则"""
+        print("添加新规则")
+        # TODO: 实现添加新规则逻辑
+
+    def delete_rule(self):
+        """删除规则"""
+        print("删除规则")
+        # TODO: 实现删除规则逻辑
+
+    def save_all_rules(self):
+        """保存所有规则"""
+        print("保存所有规则")
+        # TODO: 实现保存规则逻辑
 
 
 class Worker(QObject):
@@ -95,6 +250,9 @@ class MainWindow(QMainWindow):
         # 设置窗口初始大小
         self.resize(1200, 800)
 
+        # 创建菜单栏
+        self.init_menu_bar()
+
         # 创建核心UI组件
         self.init_ui()
 
@@ -167,7 +325,7 @@ class MainWindow(QMainWindow):
             # 利润（红色字体显示）
             profit = opportunity_data.get('profit', 0)
             profit_item = QTableWidgetItem(f"{profit:.1f}元")
-            profit_item.setForeground(profit_item.foreground().color().red())  # 红色字体
+            profit_item.setForeground(QColor(255, 0, 0))  # 红色字体
             self.table.setItem(0, 1, profit_item)
 
             # 影院名称
@@ -202,6 +360,34 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             print(f"❌ 添加数据到表格时出错: {e}")
+
+    def init_menu_bar(self):
+        """初始化菜单栏"""
+        # 创建菜单栏
+        menubar = self.menuBar()
+
+        # 创建"设置"菜单
+        settings_menu = menubar.addMenu("设置")
+
+        # 创建"配置规则..."动作
+        rule_config_action = QAction("配置规则...", self)
+        rule_config_action.setStatusTip("打开规则编辑器")
+        rule_config_action.triggered.connect(self.open_rule_editor)
+
+        # 添加动作到菜单
+        settings_menu.addAction(rule_config_action)
+
+    def open_rule_editor(self):
+        """打开规则编辑器"""
+        try:
+            # 创建规则编辑器窗口实例
+            rule_editor = RuleEditorWindow()
+
+            # 以模态对话框形式显示
+            rule_editor.exec()
+
+        except Exception as e:
+            print(f"❌ 打开规则编辑器时出错: {e}")
 
 
 class RuleEngine:
