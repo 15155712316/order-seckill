@@ -19,7 +19,28 @@
       "cost": 50.0
     },
     "profit_logic": {
-      "min_profit_threshold": 5.0
+      "min_profit_threshold": 20.0
+    }
+  },
+  {
+    "rule_id": "5a24b4bf-6e63-4a6d-9a2f-18abe32471e5",
+    "rule_name": "33",
+    "enabled": true,
+    "match_conditions": {
+      "city": "3",
+      "cinema_keywords": [
+        "3"
+      ]
+    },
+    "hall_logic": {
+      "mode": "INCLUDE",
+      "hall_list": [
+        "33"
+      ],
+      "cost": 33.0
+    },
+    "profit_logic": {
+      "min_profit_threshold": 33.0
     }
   }
 ]

@@ -9,6 +9,7 @@ import random
 import time
 import uuid
 import collections
+import logging
 from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QWidget, QTabWidget,
@@ -17,6 +18,16 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QTableWidget,
                              QHBoxLayout, QButtonGroup, QLabel, QMessageBox)
 from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt
 from PyQt6.QtGui import QColor
+
+# 配置日志系统
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("app.log", encoding='utf-8'),  # 输出到文件
+        logging.StreamHandler()  # 输出到控制台
+    ]
+)
 
 
 class DataFetcher:
@@ -27,22 +38,18 @@ class DataFetcher:
         # 用于去重的双端队列，最多保存500个已见过的订单ID
         self.seen_order_ids = collections.deque(maxlen=500)
 
-    async def fetch_latest_orders(self):
-        """
-        获取最新订单数据（模拟API调用）
+        # 计数器，用于模拟不同的API返回
+        self.fetch_count = 0
 
-        Returns:
-            list: 经过去重的新订单列表
-        """
-        # 模拟API调用 - 创建包含重复和新订单的样本列表
-        mock_api_response = [
-            # 一些可能重复的订单
+        # 总订单池 - 包含10条不同的订单用于测试
+        self.MOCK_TOTAL_ORDERS = [
             {
                 'order_id': 'order_001',
                 'city': '北京',
                 'cinema_name': '北京CBD万达影城',
                 'hall_type': 'IMAX厅',
                 'bidding_price': 65.0,
+                'seat_count': 2,
                 'show_time': '14:30',
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             },
@@ -52,6 +59,7 @@ class DataFetcher:
                 'cinema_name': '上海万达影城',
                 'hall_type': '普通厅',
                 'bidding_price': 45.0,
+                'seat_count': 1,
                 'show_time': '16:00',
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             },
@@ -61,34 +69,113 @@ class DataFetcher:
                 'cinema_name': '北京CBD万达影城',
                 'hall_type': '激光IMAX厅',
                 'bidding_price': 70.0,
+                'seat_count': 3,
                 'show_time': '19:30',
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             },
-            # 随机生成一些新订单
             {
-                'order_id': f'order_{random.randint(1000, 9999)}',
-                'city': random.choice(['北京', '上海', '广州', '深圳']),
-                'cinema_name': f'{random.choice(["北京", "上海", "广州"])}CBD万达影城',
-                'hall_type': random.choice(['IMAX厅', '激光IMAX厅', '普通厅', '4DX厅']),
-                'bidding_price': round(random.uniform(40.0, 80.0), 1),
-                'show_time': f"{random.randint(9, 22)}:{random.randint(0, 5)*10:02d}",
+                'order_id': 'order_004',
+                'city': '广州',
+                'cinema_name': '广州CBD万达影城',
+                'hall_type': 'IMAX厅',
+                'bidding_price': 60.0,
+                'seat_count': 1,
+                'show_time': '20:00',
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             },
             {
-                'order_id': f'order_{random.randint(1000, 9999)}',
-                'city': random.choice(['北京', '上海', '广州', '深圳']),
-                'cinema_name': f'{random.choice(["北京", "上海", "广州"])}万达影城',
-                'hall_type': random.choice(['IMAX厅', '激光IMAX厅', '普通厅']),
-                'bidding_price': round(random.uniform(40.0, 80.0), 1),
-                'show_time': f"{random.randint(9, 22)}:{random.randint(0, 5)*10:02d}",
+                'order_id': 'order_005',
+                'city': '深圳',
+                'cinema_name': '深圳万达影城',
+                'hall_type': '4DX厅',
+                'bidding_price': 55.0,
+                'seat_count': 2,
+                'show_time': '21:30',
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            },
+            {
+                'order_id': 'order_006',
+                'city': '北京',
+                'cinema_name': '北京CBD万达影城',
+                'hall_type': 'VIP厅',
+                'bidding_price': 80.0,
+                'seat_count': 1,
+                'show_time': '15:00',
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            },
+            {
+                'order_id': 'order_007',
+                'city': '杭州',
+                'cinema_name': '杭州万达影城',
+                'hall_type': 'IMAX厅',
+                'bidding_price': 58.0,
+                'seat_count': 4,
+                'show_time': '17:30',
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            },
+            {
+                'order_id': 'order_008',
+                'city': '成都',
+                'cinema_name': '成都CBD万达影城',
+                'hall_type': '激光IMAX厅',
+                'bidding_price': 62.0,
+                'seat_count': 2,
+                'show_time': '18:00',
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            },
+            {
+                'order_id': 'order_009',
+                'city': '武汉',
+                'cinema_name': '武汉万达影城',
+                'hall_type': 'IMAX厅',
+                'bidding_price': 56.0,
+                'seat_count': 3,
+                'show_time': '19:00',
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            },
+            {
+                'order_id': 'order_010',
+                'city': '南京',
+                'cinema_name': '南京CBD万达影城',
+                'hall_type': '普通厅',
+                'bidding_price': 48.0,
+                'seat_count': 1,
+                'show_time': '20:30',
                 'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             }
         ]
 
-        # 去重逻辑
+    async def fetch_latest_orders(self):
+        """
+        获取最新订单数据（模拟API调用）
+
+        Returns:
+            list: 经过去重的新订单列表
+        """
+        # 根据fetch_count模拟不同的API返回
+        if self.fetch_count == 0:
+            # 第一次：返回前5条订单 (order_001 到 order_005)
+            raw_orders = self.MOCK_TOTAL_ORDERS[0:5]
+            logging.debug("模拟API返回：前5条订单 (order_001 到 order_005)")
+        elif self.fetch_count == 1:
+            # 第二次：返回第3到第8条订单 (order_003 到 order_008)
+            # 这将包含3条重复订单(003,004,005)和3条新订单(006,007,008)
+            raw_orders = self.MOCK_TOTAL_ORDERS[2:8]
+            logging.debug("模拟API返回：第3到第8条订单 (order_003 到 order_008)")
+        elif self.fetch_count == 2:
+            # 第三次：返回最后3条订单 (order_008 到 order_010)
+            # 这将包含1条重复订单(008)和2条新订单(009,010)
+            raw_orders = self.MOCK_TOTAL_ORDERS[7:10]
+            logging.debug("模拟API返回：最后3条订单 (order_008 到 order_010)")
+        else:
+            # 其他情况：返回空列表
+            raw_orders = []
+            logging.debug("模拟API返回：空列表（测试结束）")
+
+        # 去重逻辑（保留原有逻辑）
         new_orders = []
 
-        for order in mock_api_response:
+        for order in raw_orders:
             order_id = order.get('order_id')
 
             # 检查订单ID是否已经见过
@@ -96,6 +183,16 @@ class DataFetcher:
                 # 新订单：添加到结果列表并记录ID
                 new_orders.append(order)
                 self.seen_order_ids.append(order_id)
+                logging.debug(f"新订单: {order_id}")
+            else:
+                logging.debug(f"重复订单: {order_id} (已跳过)")
+
+        # 记录统计信息
+        if len(raw_orders) > 0:
+            logging.info(f"API返回 {len(raw_orders)} 条订单，筛选出 {len(new_orders)} 条新订单")
+
+        # 增加计数器
+        self.fetch_count += 1
 
         # 模拟网络延迟
         await asyncio.sleep(0.1)
@@ -121,7 +218,7 @@ class Worker(QObject):
 
         async def main_loop():
             """主要的异步循环，从API获取订单数据"""
-            print("🚀 后台监控线程启动...")
+            logging.info("后台监控线程启动")
 
             # 实例化数据获取器
             fetcher = DataFetcher()
@@ -142,16 +239,16 @@ class Worker(QObject):
                             result['timestamp'] = order['timestamp']
                             result['show_time'] = order['show_time']
 
-                            print(f"✅ 发现抢单机会: {result['rule_name']} - 利润{result['profit']:.1f}元")
+                            logging.info(f"发现抢单机会: {result['rule_name']} - 总利润{result['total_profit']:.1f}元 ({result['seat_count']}张票)")
 
                             # 发射信号到主窗口
                             self.new_opportunity.emit(result)
 
-                    # 控制API调用频率
-                    await asyncio.sleep(2)
+                    # 控制API调用频率（延长到5秒便于观察测试）
+                    await asyncio.sleep(5)
 
                 except Exception as e:
-                    print(f"❌ 后台处理出错: {e}")
+                    logging.error(f"后台处理出错: {e}")
                     await asyncio.sleep(5)
 
         # 启动异步循环
@@ -190,6 +287,9 @@ class MainWindow(QMainWindow):
 
         # 启动后台工作线程
         self.init_worker_thread()
+
+        # 记录应用程序启动
+        logging.info("应用程序启动，主窗口已创建")
 
     def create_monitoring_tab(self):
         """创建第一个Tab页：抢单监控"""
@@ -394,11 +494,11 @@ class MainWindow(QMainWindow):
             self.rule_list.clearSelection()
             self.rule_list.setCurrentItem(None)
 
-            print("✅ 已清空表单，可以输入新规则")
+            logging.debug("已清空表单，准备输入新规则")
             self.statusBar().showMessage("请填写新规则信息，然后点击'保存'")
 
         except Exception as e:
-            print(f"❌ 添加新规则时出错: {e}")
+            logging.error(f"添加新规则时出错: {e}")
 
     def delete_selected_rule(self):
         """删除选中的规则"""
@@ -431,11 +531,11 @@ class MainWindow(QMainWindow):
             self.save_rules_to_file()
             self.load_rules_to_editor()
 
-            print(f"✅ 已删除规则: {rule_name}")
+            logging.info(f"规则 '{rule_name}' 已被删除")
             self.statusBar().showMessage(f"规则 '{rule_name}' 已删除")
 
         except Exception as e:
-            print(f"❌ 删除规则时出错: {e}")
+            logging.error(f"删除规则时出错: {e}")
             self.statusBar().showMessage("删除规则失败")
 
     def save_current_rule(self):
@@ -514,7 +614,7 @@ class MainWindow(QMainWindow):
                         self.engine.rules[i] = updated_rule
                         break
 
-                print(f"✅ 已更新规则: {rule_name}")
+                logging.debug(f"已更新规则: {rule_name}")
 
             else:
                 # 新增模式
@@ -544,7 +644,7 @@ class MainWindow(QMainWindow):
                 }
 
                 self.engine.rules.append(new_rule)
-                print(f"✅ 已新增规则: {rule_name}")
+                logging.debug(f"已新增规则: {rule_name}")
 
             # 重新处理hall_set（为规则引擎预处理）
             for rule in self.engine.rules:
@@ -559,8 +659,11 @@ class MainWindow(QMainWindow):
             # 在状态栏给出成功提示
             self.statusBar().showMessage("保存成功！")
 
+            # 记录保存成功
+            logging.info(f"规则 '{rule_name}' 已成功保存")
+
         except Exception as e:
-            print(f"❌ 保存规则时出错: {e}")
+            logging.error(f"保存规则时出错: {e}")
             QMessageBox.warning(self, "保存失败", f"保存规则时发生错误：{str(e)}")
             self.statusBar().showMessage("保存失败")
 
@@ -581,10 +684,10 @@ class MainWindow(QMainWindow):
             with open('rules.json', 'w', encoding='utf-8') as f:
                 json.dump(rules_to_save, f, ensure_ascii=False, indent=2)
 
-            print("✅ 规则已保存到文件")
+            logging.debug("规则已保存到文件")
 
         except Exception as e:
-            print(f"❌ 保存规则到文件时出错: {e}")
+            logging.error(f"保存规则到文件时出错: {e}")
             raise
 
     def connect_signals(self):
@@ -612,10 +715,10 @@ class MainWindow(QMainWindow):
             if self.rule_list.count() > 0:
                 self.rule_list.setCurrentRow(0)
 
-            print(f"✅ 已加载 {len(self.engine.rules)} 条规则到编辑器")
+            logging.debug(f"已加载 {len(self.engine.rules)} 条规则到编辑器")
 
         except Exception as e:
-            print(f"❌ 加载规则到编辑器时出错: {e}")
+            logging.error(f"加载规则到编辑器时出错: {e}")
 
     def display_rule_details(self, current_item):
         """显示规则详情"""
@@ -640,7 +743,7 @@ class MainWindow(QMainWindow):
                     break
 
             if selected_rule is None:
-                print(f"❌ 未找到规则: {rule_name}")
+                logging.warning(f"未找到规则: {rule_name}")
                 return
 
             # 填充表单数据
@@ -683,10 +786,10 @@ class MainWindow(QMainWindow):
             enabled = selected_rule.get('enabled', True)
             self.checkbox_enabled.setChecked(enabled)
 
-            print(f"✅ 已显示规则详情: {rule_name}")
+            logging.debug(f"已显示规则详情: {rule_name}")
 
         except Exception as e:
-            print(f"❌ 显示规则详情时出错: {e}")
+            logging.error(f"显示规则详情时出错: {e}")
 
     def init_worker_thread(self):
         """初始化后台工作线程"""
@@ -721,8 +824,9 @@ class MainWindow(QMainWindow):
             self.table.setItem(0, 0, timestamp_item)
 
             # 利润（红色字体显示）
-            profit = opportunity_data.get('profit', 0)
-            profit_item = QTableWidgetItem(f"{profit:.1f}元")
+            total_profit = opportunity_data.get('total_profit', 0)
+            seat_count = opportunity_data.get('seat_count', 1)
+            profit_item = QTableWidgetItem(f"{total_profit:.1f}元 ({seat_count}张票)")
             profit_item.setForeground(QColor(255, 0, 0))  # 红色字体
             self.table.setItem(0, 1, profit_item)
 
@@ -754,10 +858,13 @@ class MainWindow(QMainWindow):
 
             # 更新状态栏
             total_opportunities = self.table.rowCount()
-            self.statusBar().showMessage(f"发现 {total_opportunities} 个抢单机会，最新利润：{profit:.1f}元")
+            self.statusBar().showMessage(f"发现 {total_opportunities} 个抢单机会，最新利润：{total_profit:.1f}元")
+
+            # 记录抢单机会
+            logging.info(f"发现抢单机会: {opportunity_data['rule_name']} - 总利润 {opportunity_data['total_profit']:.2f}元 ({opportunity_data['seat_count']}张票)")
 
         except Exception as e:
-            print(f"❌ 添加数据到表格时出错: {e}")
+            logging.error(f"添加数据到表格时出错: {e}")
 
 class RuleEngine:
     """规则引擎类 - 负责加载和处理抢单决策规则"""
@@ -797,16 +904,16 @@ class RuleEngine:
 
             # 将预处理后的规则赋值给实例变量
             self.rules = processed_rules
-            print(f"✅ 成功加载 {len(self.rules)} 条规则")
+            logging.info(f"成功加载 {len(self.rules)} 条规则")
 
         except FileNotFoundError:
-            print(f"❌ 错误：找不到规则文件 {self.filepath}")
+            logging.error(f"错误：找不到规则文件 {self.filepath}")
             self.rules = []
         except json.JSONDecodeError as e:
-            print(f"❌ 错误：规则文件JSON格式错误 - {e}")
+            logging.error(f"错误：规则文件JSON格式错误 - {e}")
             self.rules = []
         except Exception as e:
-            print(f"❌ 错误：加载规则文件时发生未知错误 - {e}")
+            logging.error(f"错误：加载规则文件时发生未知错误 - {e}")
             self.rules = []
 
     def check_order(self, order):
@@ -819,6 +926,7 @@ class RuleEngine:
                 - cinema_name: 影院名称
                 - hall_type: 影厅类型
                 - bidding_price: 竞价价格
+                - seat_count: 票数（新增字段）
 
         Returns:
             dict: 如果匹配成功且利润达标，返回包含利润和规则信息的字典
@@ -835,6 +943,7 @@ class RuleEngine:
             order_cinema_name = order.get('cinema_name', '').lower().strip()
             order_hall_type = order.get('hall_type', '').lower().strip()
             order_bidding_price = order.get('bidding_price', 0)
+            order_seat_count = order.get('seat_count', 1)  # 获取票数字段，默认为1
 
             # 获取规则条件
             match_conditions = rule.get('match_conditions', {})
@@ -898,18 +1007,19 @@ class RuleEngine:
             # 4. 利润计算与决策
             # 如果执行到这里，说明所有匹配条件都满足
             hall_cost = hall_logic.get('cost', 0)
-            profit = order_bidding_price - hall_cost
+
+            # 修正后的利润计算公式：考虑票数
+            single_ticket_profit = order_bidding_price - hall_cost
+            total_profit = single_ticket_profit * order_seat_count
             min_profit_threshold = profit_logic.get('min_profit_threshold', 0)
 
-            # 判断利润是否达标
-            if profit >= min_profit_threshold:
+            # 判断总利润是否达标
+            if total_profit >= min_profit_threshold:
                 # 利润达标，返回匹配结果
                 return {
-                    'profit': profit,
+                    'total_profit': total_profit,
+                    'seat_count': order_seat_count,
                     'rule_name': rule.get('rule_name', '未命名规则'),
-                    'rule_id': rule.get('rule_id', ''),
-                    'hall_cost': hall_cost,
-                    'min_profit_threshold': min_profit_threshold,
                     'order_details': order.copy()  # 返回订单详情的副本
                 }
 
