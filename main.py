@@ -3,8 +3,83 @@
 
 import sys
 import json
+import asyncio
+import aiohttp
+import random
+import time
+from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QWidget)
+from PyQt6.QtCore import QThread, QObject, pyqtSignal
+
+
+class Worker(QObject):
+    """后台工作线程类 - 负责异步处理订单监控和规则匹配"""
+
+    # 定义自定义信号，用于向主窗口发送抢单机会数据
+    new_opportunity = pyqtSignal(dict)
+
+    def run(self):
+        """后台任务主方法"""
+        # 实例化规则引擎
+        engine = RuleEngine('rules.json')
+
+        async def main_loop():
+            """主要的异步循环，模拟持续抓取订单"""
+            print("🚀 后台监控线程启动...")
+
+            # 模拟订单数据的基础模板
+            cities = ['北京', '上海', '广州', '深圳', '杭州']
+            cinema_templates = [
+                '{}CBD万达影城',
+                '{}万达影城',
+                '{}大悦城影城',
+                '{}购物中心影城'
+            ]
+            hall_types = ['IMAX厅', 'imax厅', '激光IMAX厅', '普通厅', '4DX厅', 'VIP厅']
+
+            while True:
+                try:
+                    # 生成随机的模拟订单
+                    city = random.choice(cities)
+                    cinema_template = random.choice(cinema_templates)
+                    cinema_name = cinema_template.format(city)
+                    hall_type = random.choice(hall_types)
+                    bidding_price = round(random.uniform(45.0, 80.0), 1)
+
+                    # 创建模拟订单
+                    order = {
+                        'city': city,
+                        'cinema_name': cinema_name,
+                        'hall_type': hall_type,
+                        'bidding_price': bidding_price,
+                        'show_time': f"{random.randint(9, 22)}:{random.randint(0, 5)*10:02d}",
+                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    }
+
+                    # 使用规则引擎检查订单
+                    result = engine.check_order(order)
+
+                    # 如果匹配成功，发射信号
+                    if result is not None:
+                        # 添加时间戳和场次信息到结果中
+                        result['timestamp'] = order['timestamp']
+                        result['show_time'] = order['show_time']
+
+                        print(f"✅ 发现抢单机会: {result['rule_name']} - 利润{result['profit']:.1f}元")
+
+                        # 发射信号到主窗口
+                        self.new_opportunity.emit(result)
+
+                    # 控制抓取频率，模拟真实抓取间隔
+                    await asyncio.sleep(1)
+
+                except Exception as e:
+                    print(f"❌ 后台处理出错: {e}")
+                    await asyncio.sleep(2)
+
+        # 启动异步循环
+        asyncio.run(main_loop())
 
 
 class MainWindow(QMainWindow):
@@ -22,6 +97,9 @@ class MainWindow(QMainWindow):
 
         # 创建核心UI组件
         self.init_ui()
+
+        # 启动后台工作线程
+        self.init_worker_thread()
 
     def init_ui(self):
         """初始化用户界面"""
@@ -53,6 +131,77 @@ class MainWindow(QMainWindow):
 
         # 设置中心部件
         self.setCentralWidget(central_widget)
+
+    def init_worker_thread(self):
+        """初始化后台工作线程"""
+        # 创建线程和工作对象
+        self.thread = QThread()
+        self.worker = Worker()
+
+        # 将worker移动到新线程中
+        self.worker.moveToThread(self.thread)
+
+        # 连接信号与槽
+        self.thread.started.connect(self.worker.run)
+        self.worker.new_opportunity.connect(self.add_opportunity_to_table)
+
+        # 启动线程
+        self.thread.start()
+
+        # 更新状态栏
+        self.statusBar().showMessage("后台监控已启动，等待抢单机会...")
+
+    def add_opportunity_to_table(self, opportunity_data):
+        """槽函数：接收抢单机会数据并添加到表格中"""
+        try:
+            # 在表格顶部插入新行
+            self.table.insertRow(0)
+
+            # 从opportunity_data字典中提取信息并填充到表格
+            # 列顺序：['触发时间', '利润', '影院名称', '影厅', '场次', '竞标价', '匹配规则']
+
+            # 触发时间
+            timestamp_item = QTableWidgetItem(opportunity_data.get('timestamp', ''))
+            self.table.setItem(0, 0, timestamp_item)
+
+            # 利润（红色字体显示）
+            profit = opportunity_data.get('profit', 0)
+            profit_item = QTableWidgetItem(f"{profit:.1f}元")
+            profit_item.setForeground(profit_item.foreground().color().red())  # 红色字体
+            self.table.setItem(0, 1, profit_item)
+
+            # 影院名称
+            order_details = opportunity_data.get('order_details', {})
+            cinema_item = QTableWidgetItem(order_details.get('cinema_name', ''))
+            self.table.setItem(0, 2, cinema_item)
+
+            # 影厅
+            hall_item = QTableWidgetItem(order_details.get('hall_type', ''))
+            self.table.setItem(0, 3, hall_item)
+
+            # 场次
+            show_time_item = QTableWidgetItem(opportunity_data.get('show_time', ''))
+            self.table.setItem(0, 4, show_time_item)
+
+            # 竞标价
+            bidding_price = order_details.get('bidding_price', 0)
+            price_item = QTableWidgetItem(f"{bidding_price:.1f}元")
+            self.table.setItem(0, 5, price_item)
+
+            # 匹配规则
+            rule_item = QTableWidgetItem(opportunity_data.get('rule_name', ''))
+            self.table.setItem(0, 6, rule_item)
+
+            # 限制表格行数，避免数据过多
+            if self.table.rowCount() > 100:
+                self.table.removeRow(100)
+
+            # 更新状态栏
+            total_opportunities = self.table.rowCount()
+            self.statusBar().showMessage(f"发现 {total_opportunities} 个抢单机会，最新利润：{profit:.1f}元")
+
+        except Exception as e:
+            print(f"❌ 添加数据到表格时出错: {e}")
 
 
 class RuleEngine:
