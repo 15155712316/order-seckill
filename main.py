@@ -8,6 +8,7 @@ import aiohttp
 import random
 import time
 import uuid
+import collections
 from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QTableWidget,
                              QTableWidgetItem, QVBoxLayout, QWidget, QTabWidget,
@@ -16,6 +17,90 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QTableWidget,
                              QHBoxLayout, QButtonGroup, QLabel, QMessageBox)
 from PyQt6.QtCore import QThread, QObject, pyqtSignal, Qt
 from PyQt6.QtGui import QColor
+
+
+class DataFetcher:
+    """数据获取器类 - 负责从API获取订单数据并去重"""
+
+    def __init__(self):
+        """初始化数据获取器"""
+        # 用于去重的双端队列，最多保存500个已见过的订单ID
+        self.seen_order_ids = collections.deque(maxlen=500)
+
+    async def fetch_latest_orders(self):
+        """
+        获取最新订单数据（模拟API调用）
+
+        Returns:
+            list: 经过去重的新订单列表
+        """
+        # 模拟API调用 - 创建包含重复和新订单的样本列表
+        mock_api_response = [
+            # 一些可能重复的订单
+            {
+                'order_id': 'order_001',
+                'city': '北京',
+                'cinema_name': '北京CBD万达影城',
+                'hall_type': 'IMAX厅',
+                'bidding_price': 65.0,
+                'show_time': '14:30',
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            },
+            {
+                'order_id': 'order_002',
+                'city': '上海',
+                'cinema_name': '上海万达影城',
+                'hall_type': '普通厅',
+                'bidding_price': 45.0,
+                'show_time': '16:00',
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            },
+            {
+                'order_id': 'order_003',
+                'city': '北京',
+                'cinema_name': '北京CBD万达影城',
+                'hall_type': '激光IMAX厅',
+                'bidding_price': 70.0,
+                'show_time': '19:30',
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            },
+            # 随机生成一些新订单
+            {
+                'order_id': f'order_{random.randint(1000, 9999)}',
+                'city': random.choice(['北京', '上海', '广州', '深圳']),
+                'cinema_name': f'{random.choice(["北京", "上海", "广州"])}CBD万达影城',
+                'hall_type': random.choice(['IMAX厅', '激光IMAX厅', '普通厅', '4DX厅']),
+                'bidding_price': round(random.uniform(40.0, 80.0), 1),
+                'show_time': f"{random.randint(9, 22)}:{random.randint(0, 5)*10:02d}",
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            },
+            {
+                'order_id': f'order_{random.randint(1000, 9999)}',
+                'city': random.choice(['北京', '上海', '广州', '深圳']),
+                'cinema_name': f'{random.choice(["北京", "上海", "广州"])}万达影城',
+                'hall_type': random.choice(['IMAX厅', '激光IMAX厅', '普通厅']),
+                'bidding_price': round(random.uniform(40.0, 80.0), 1),
+                'show_time': f"{random.randint(9, 22)}:{random.randint(0, 5)*10:02d}",
+                'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+        ]
+
+        # 去重逻辑
+        new_orders = []
+
+        for order in mock_api_response:
+            order_id = order.get('order_id')
+
+            # 检查订单ID是否已经见过
+            if order_id not in self.seen_order_ids:
+                # 新订单：添加到结果列表并记录ID
+                new_orders.append(order)
+                self.seen_order_ids.append(order_id)
+
+        # 模拟网络延迟
+        await asyncio.sleep(0.1)
+
+        return new_orders
 
 
 class Worker(QObject):
@@ -35,58 +120,39 @@ class Worker(QObject):
         engine = self.engine
 
         async def main_loop():
-            """主要的异步循环，模拟持续抓取订单"""
+            """主要的异步循环，从API获取订单数据"""
             print("🚀 后台监控线程启动...")
 
-            # 模拟订单数据的基础模板
-            cities = ['北京', '上海', '广州', '深圳', '杭州']
-            cinema_templates = [
-                '{}CBD万达影城',
-                '{}万达影城',
-                '{}大悦城影城',
-                '{}购物中心影城'
-            ]
-            hall_types = ['IMAX厅', 'imax厅', '激光IMAX厅', '普通厅', '4DX厅', 'VIP厅']
+            # 实例化数据获取器
+            fetcher = DataFetcher()
 
             while True:
                 try:
-                    # 生成随机的模拟订单
-                    city = random.choice(cities)
-                    cinema_template = random.choice(cinema_templates)
-                    cinema_name = cinema_template.format(city)
-                    hall_type = random.choice(hall_types)
-                    bidding_price = round(random.uniform(45.0, 80.0), 1)
+                    # 调用API获取最新订单（经过去重）
+                    latest_orders = await fetcher.fetch_latest_orders()
 
-                    # 创建模拟订单
-                    order = {
-                        'city': city,
-                        'cinema_name': cinema_name,
-                        'hall_type': hall_type,
-                        'bidding_price': bidding_price,
-                        'show_time': f"{random.randint(9, 22)}:{random.randint(0, 5)*10:02d}",
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    }
+                    # 遍历新订单并检查规则匹配
+                    for order in latest_orders:
+                        # 使用规则引擎检查订单
+                        result = engine.check_order(order)
 
-                    # 使用规则引擎检查订单
-                    result = engine.check_order(order)
+                        # 如果匹配成功，发射信号
+                        if result is not None:
+                            # 添加时间戳和场次信息到结果中
+                            result['timestamp'] = order['timestamp']
+                            result['show_time'] = order['show_time']
 
-                    # 如果匹配成功，发射信号
-                    if result is not None:
-                        # 添加时间戳和场次信息到结果中
-                        result['timestamp'] = order['timestamp']
-                        result['show_time'] = order['show_time']
+                            print(f"✅ 发现抢单机会: {result['rule_name']} - 利润{result['profit']:.1f}元")
 
-                        print(f"✅ 发现抢单机会: {result['rule_name']} - 利润{result['profit']:.1f}元")
+                            # 发射信号到主窗口
+                            self.new_opportunity.emit(result)
 
-                        # 发射信号到主窗口
-                        self.new_opportunity.emit(result)
-
-                    # 控制抓取频率，模拟真实抓取间隔
-                    await asyncio.sleep(1)
+                    # 控制API调用频率
+                    await asyncio.sleep(2)
 
                 except Exception as e:
                     print(f"❌ 后台处理出错: {e}")
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(5)
 
         # 启动异步循环
         asyncio.run(main_loop())

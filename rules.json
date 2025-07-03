@@ -19,7 +19,7 @@
       "cost": 50.0
     },
     "profit_logic": {
-      "min_profit_threshold": 31.0
+      "min_profit_threshold": 5.0
     }
   }
 ]
