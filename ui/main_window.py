@@ -69,12 +69,12 @@ class Worker(QObject):
                             # 发射信号到主窗口
                             self.new_opportunity.emit(result)
 
-                    # 控制API调用频率（延长到5秒便于观察测试）
-                    await asyncio.sleep(5)
+                    # 控制API调用频率（延长到3秒便于观察测试）
+                    await asyncio.sleep(3)
 
                 except Exception as e:
                     logging.error(f"后台处理出错: {e}")
-                    await asyncio.sleep(5)
+                    await asyncio.sleep(3)
 
         # 启动异步循环
         asyncio.run(main_loop())
