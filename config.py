@@ -5,17 +5,31 @@
 """
 
 # 哈哈平台API配置
-HAHA_API_URL = "https://piaofan.com/api/order/list"
-HAHA_TOKEN = "64932f01040374d3a7dc9438a48c5178"
-HAHA_HEADERS = {
-    'token': HAHA_TOKEN,
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-    'Accept': 'application/json, text/plain, */*',
-    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
-    'Content-Type': 'application/json',
-    'Referer': 'https://piaofan.com/',
-    'Origin': 'https://piaofan.com'
+API_URL = 'https://hahapiao.cn/api/Synchro/pcToList'
+API_TOKEN = "64932f01040374d3a7dc9438a48c5178"
+
+# 从curl命令中提取的Cookie字符串
+API_COOKIE = "_c_WBKFRo=CbkeIVy2jCMFQKiSKiNZIOjL0rfGmOzcfROYTyCm; PHPSESSID=e2vnuucrt8qnts3ul9b13aabr3"
+
+API_HEADERS = {
+    'accept': 'application/json, text/plain, */*',
+    'accept-language': 'zh-CN,zh;q=0.9',
+    'content-type': 'application/x-www-form-urlencoded',
+    'origin': 'https://hahapiao.cn',
+    'priority': 'u=1, i',
+    'referer': 'https://hahapiao.cn/pc/',
+    'sec-ch-ua': '"Google Chrome";v="137", "Chromium";v="137", "Not/A)Brand";v="24"',
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': '"Windows"',
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-origin',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
+    'token': API_TOKEN,  # 将token也放入headers
+    'Cookie': API_COOKIE  # 将cookie字符串放入headers
 }
+
+API_DATA_PAYLOAD = 'limit=200'
 
 # 应用程序配置
 APP_NAME = "抢单提醒系统"
