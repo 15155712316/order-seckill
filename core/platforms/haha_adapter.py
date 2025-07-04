@@ -113,13 +113,21 @@ class HahaAdapter(BaseAdapter):
                 logging.error(f"原始响应内容: {response_text}")
                 return []
 
-            # 4. 数据标准化
-            standardized_orders = self._standardize_orders(decrypted_orders)
+            # 4. 精确预过滤：只保留 is_from != '5' 的订单
+            filtered_orders = []
+            for order in decrypted_orders:
+                if order.get('is_from') != '5':
+                    filtered_orders.append(order)
 
-            # 5. 去重处理
+            logging.info(f"精确预过滤完成，从 {len(decrypted_orders)} 条订单中筛选出 {len(filtered_orders)} 条有效订单（排除is_from='5'）")
+
+            # 5. 数据标准化
+            standardized_orders = self._standardize_orders(filtered_orders)
+
+            # 6. 去重处理
             new_orders = self._deduplicate_orders(standardized_orders)
 
-            # 6. 增量式保存新订单到result.log
+            # 7. 增量式保存新订单到result.log
             if len(new_orders) > 0:
                 try:
                     current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -245,21 +253,21 @@ class HahaAdapter(BaseAdapter):
             logging.error(f"错误类型: {type(e).__name__}")
             return []
     
-    def _standardize_orders(self, raw_orders: list) -> list:
+    def _standardize_orders(self, filtered_orders: list) -> list:
         """
         标准化订单数据格式 - v1.0最终版本
 
-        接收原始订单列表，进行字段映射和数据类型转换
+        接收经过预过滤的订单列表，进行字段映射和数据类型转换
 
         Args:
-            raw_orders (list): 原始订单数据列表
+            filtered_orders (list): 经过预过滤的订单数据列表（is_from != '5'）
 
         Returns:
             list: 标准化后的订单列表
         """
         standardized = []
 
-        for order in raw_orders:
+        for order in filtered_orders:
             try:
                 # 提取订单ID
                 order_id = order.get('order_id', '')
@@ -292,8 +300,6 @@ class HahaAdapter(BaseAdapter):
                 cinema_name = order.get('cinemaName', '')
                 hall_type = order.get('hallName', '')
                 movie_name = order.get('movieName', '')
-                show_timestamp = order.get('show_time', '')
-                seats_info = order.get('seats', '')
 
                 # 构建标准化订单对象
                 standardized_order = {
@@ -304,8 +310,6 @@ class HahaAdapter(BaseAdapter):
                     'cinema_name': cinema_name,
                     'hall_type': hall_type,
                     'movie_name': movie_name,
-                    'show_timestamp': show_timestamp,
-                    'seats_info': seats_info,
                     # 保留原始数据以备后用
                     'raw_data': order
                 }
@@ -320,19 +324,19 @@ class HahaAdapter(BaseAdapter):
         logging.info(f"数据标准化完成，成功处理 {len(standardized)} 条订单")
         return standardized
     
-    def _deduplicate_orders(self, orders):
+    def _deduplicate_orders(self, standardized_orders: list) -> list:
         """
         去重处理，过滤掉已经见过的订单
-        
+
         Args:
-            orders (list): 订单列表
-            
+            standardized_orders (list): 标准化后的订单列表
+
         Returns:
             list: 去重后的新订单列表
         """
         new_orders = []
-        
-        for order in orders:
+
+        for order in standardized_orders:
             order_id = order.get('order_id', '')
             
             # 跳过没有ID的订单
