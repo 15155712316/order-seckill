@@ -1,7 +1,7 @@
 [
   {
     "rule_id": "rule_001",
-    "rule_name": "万达测试",
+    "rule_name": "万达imax测试",
     "enabled": true,
     "match_conditions": {
       "city": "",
@@ -11,8 +11,10 @@
     },
     "hall_logic": {
       "mode": "ALL",
-      "hall_list": [],
-      "cost": 50.0
+      "hall_list": [
+        "IMAX"
+      ],
+      "cost": 37.0
     },
     "profit_logic": {
       "min_profit_threshold": 10.0

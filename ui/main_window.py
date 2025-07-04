@@ -22,7 +22,7 @@ from PyQt6.QtGui import QColor
 
 from core.engine import RuleEngine
 from core.platforms.haha_adapter import HahaAdapter
-from config import RULES_FILE
+from config import RULES_FILE, API_REQUEST_INTERVAL
 
 
 class Worker(QObject):
@@ -30,6 +30,8 @@ class Worker(QObject):
 
     # 定义自定义信号，用于向主窗口发送抢单机会数据
     new_opportunity = pyqtSignal(dict)
+    # 定义状态更新信号，用于向主窗口发送状态信息
+    status_update = pyqtSignal(str)
 
     def __init__(self, engine):
         """初始化Worker，接受规则引擎实例"""
@@ -50,6 +52,9 @@ class Worker(QObject):
 
             while True:
                 try:
+                    # 发射状态更新信号 - 开始获取订单
+                    self.status_update.emit("正在获取订单...")
+
                     # 调用适配器获取最新订单（经过去重）
                     latest_orders = await adapter.fetch_and_process()
 
@@ -69,12 +74,16 @@ class Worker(QObject):
                             # 发射信号到主窗口
                             self.new_opportunity.emit(result)
 
-                    # 控制API调用频率（延长到3秒便于观察测试）
-                    await asyncio.sleep(3)
+                    # 发射状态更新信号 - 获取完成，等待下次轮询
+                    self.status_update.emit(f"获取完成（{len(latest_orders)}个新订单），{API_REQUEST_INTERVAL}秒后开始下一次轮询...")
+
+                    # 控制API调用频率
+                    await asyncio.sleep(API_REQUEST_INTERVAL)
 
                 except Exception as e:
                     logging.error(f"后台处理出错: {e}")
-                    await asyncio.sleep(3)
+                    self.status_update.emit(f"处理出错: {e}，{API_REQUEST_INTERVAL}秒后重试...")
+                    await asyncio.sleep(API_REQUEST_INTERVAL)
 
         # 启动异步循环
         asyncio.run(main_loop())
@@ -628,6 +637,7 @@ class MainWindow(QMainWindow):
         # 连接信号与槽
         self.thread.started.connect(self.worker.run)
         self.worker.new_opportunity.connect(self.add_opportunity_to_table)
+        self.worker.status_update.connect(self.statusBar().showMessage)
 
         # 启动线程
         self.thread.start()
@@ -690,3 +700,30 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             logging.error(f"添加数据到表格时出错: {e}")
+
+    def closeEvent(self, event):
+        """重写关闭事件，实现优雅退出"""
+        try:
+            logging.info("正在关闭应用程序...")
+
+            # 安全地退出后台线程
+            if hasattr(self, 'thread') and self.thread.isRunning():
+                logging.info("正在停止后台监控线程...")
+                self.thread.quit()  # 请求线程退出
+
+                # 等待线程完全退出，最多等待3秒
+                if self.thread.wait(3000):  # 3000毫秒 = 3秒
+                    logging.info("后台线程已安全退出")
+                else:
+                    logging.warning("后台线程退出超时，强制终止")
+                    self.thread.terminate()
+                    self.thread.wait(1000)  # 再等待1秒确保终止
+
+            # 正式关闭窗口
+            event.accept()
+            logging.info("应用程序已关闭")
+
+        except Exception as e:
+            logging.error(f"关闭应用程序时出错: {e}")
+            # 即使出错也要关闭窗口
+            event.accept()

@@ -113,11 +113,29 @@ class HahaAdapter(BaseAdapter):
                 logging.error(f"原始响应内容: {response_text}")
                 return []
 
-            # 4. 数据清洗和标准化
+            # 4. 数据标准化
             standardized_orders = self._standardize_orders(decrypted_orders)
 
             # 5. 去重处理
             new_orders = self._deduplicate_orders(standardized_orders)
+
+            # 6. 增量式保存新订单到result.log
+            if len(new_orders) > 0:
+                try:
+                    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    with open('result.log', 'a', encoding='utf-8') as f:
+                        f.write("=" * 80 + "\n")
+                        f.write(f"轮询时间: {current_time}\n")
+                        f.write(f"新订单数量: {len(new_orders)} 条\n")
+                        f.write("=" * 80 + "\n")
+                        f.write("新增订单详细信息:\n")
+                        f.write(json.dumps(new_orders, ensure_ascii=False, indent=2))
+                        f.write("\n" + "=" * 80 + "\n\n")
+                    logging.info(f"✅ 已保存 {len(new_orders)} 条新订单到 result.log 文件")
+                except Exception as e:
+                    logging.error(f"❌ 保存新订单到result.log失败: {e}")
+            else:
+                logging.info("ℹ️ 本次轮询无新订单，未更新 result.log 文件")
 
             logging.info(f"成功处理 {len(new_orders)} 个新订单")
             return new_orders
@@ -204,44 +222,12 @@ class HahaAdapter(BaseAdapter):
             # 检查解密后的数据格式
             if isinstance(decrypted_data, list):
                 logging.info(f"✅ 解密成功，获得 {len(decrypted_data)} 条订单数据")
-
-                # 将解密后的订单数据保存到result.log
-                try:
-                    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    with open('result.log', 'w', encoding='utf-8') as f:
-                        f.write("=" * 80 + "\n")
-                        f.write(f"解密时间: {current_time}\n")
-                        f.write(f"订单数量: {len(decrypted_data)} 条\n")
-                        f.write("=" * 80 + "\n")
-                        f.write("解密后的订单数据:\n")
-                        f.write(json.dumps(decrypted_data, ensure_ascii=False, indent=2))
-                        f.write("\n" + "=" * 80 + "\n")
-                    logging.info("✅ 解密后的订单数据已保存到 result.log 文件")
-                except Exception as e:
-                    logging.error(f"❌ 保存解密数据到result.log失败: {e}")
-
                 return decrypted_data
             elif isinstance(decrypted_data, dict):
                 # 如果是字典，尝试提取订单列表
                 orders = decrypted_data.get('data', decrypted_data.get('list', []))
                 if isinstance(orders, list):
                     logging.info(f"✅ 解密成功，从字典中提取 {len(orders)} 条订单数据")
-
-                    # 将解密后的订单数据保存到result.log
-                    try:
-                        current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                        with open('result.log', 'w', encoding='utf-8') as f:
-                            f.write("=" * 80 + "\n")
-                            f.write(f"解密时间: {current_time}\n")
-                            f.write(f"订单数量: {len(orders)} 条\n")
-                            f.write("=" * 80 + "\n")
-                            f.write("解密后的订单数据:\n")
-                            f.write(json.dumps(orders, ensure_ascii=False, indent=2))
-                            f.write("\n" + "=" * 80 + "\n")
-                        logging.info("✅ 解密后的订单数据已保存到 result.log 文件")
-                    except Exception as e:
-                        logging.error(f"❌ 保存解密数据到result.log失败: {e}")
-
                     return orders
                 else:
                     logging.warning("解密后的字典中没有找到订单列表")
@@ -259,38 +245,79 @@ class HahaAdapter(BaseAdapter):
             logging.error(f"错误类型: {type(e).__name__}")
             return []
     
-    def _standardize_orders(self, raw_orders):
+    def _standardize_orders(self, raw_orders: list) -> list:
         """
-        标准化订单数据格式
-        
+        标准化订单数据格式 - v1.0最终版本
+
+        接收原始订单列表，进行字段映射和数据类型转换
+
         Args:
             raw_orders (list): 原始订单数据列表
-            
+
         Returns:
             list: 标准化后的订单列表
         """
         standardized = []
-        
+
         for order in raw_orders:
             try:
-                # 标准化订单字段
+                # 提取订单ID
+                order_id = order.get('order_id', '')
+
+                # 验证必要字段
+                if not order_id:
+                    logging.warning(f"订单缺少order_id字段，跳过此订单: {order}")
+                    continue
+
+                # 安全地转换bidding_price字段 - 从 order.get('maxPrice', 0.0) 获取
+                bidding_price = 0.0
+                try:
+                    price_value = order.get('maxPrice', 0.0)
+                    bidding_price = float(price_value) if price_value else 0.0
+                except (ValueError, TypeError):
+                    logging.warning(f"订单 {order_id} 的maxPrice字段转换失败，使用默认值0.0")
+                    bidding_price = 0.0
+
+                # 安全地转换seat_count字段
+                seat_count = 1
+                try:
+                    seat_value = order.get('seat_num', 1)
+                    seat_count = int(seat_value) if seat_value else 1
+                except (ValueError, TypeError):
+                    logging.warning(f"订单 {order_id} 的seat_num字段转换失败，使用默认值1")
+                    seat_count = 1
+
+                # 提取字符串字段（提供默认值）
+                city = order.get('cityName', '')
+                cinema_name = order.get('cinemaName', '')
+                hall_type = order.get('hallName', '')
+                movie_name = order.get('movieName', '')
+                show_timestamp = order.get('show_time', '')
+                seats_info = order.get('seats', '')
+
+                # 构建标准化订单对象
                 standardized_order = {
-                    'order_id': order.get('id', ''),
-                    'city': order.get('city', ''),
-                    'cinema_name': order.get('cinema_name', ''),
-                    'hall_type': order.get('hall_type', ''),
-                    'bidding_price': float(order.get('bidding_price', 0)),
-                    'seat_count': int(order.get('seat_count', 1)),
+                    'order_id': order_id,
+                    'bidding_price': bidding_price,
+                    'seat_count': seat_count,
+                    'city': city,
+                    'cinema_name': cinema_name,
+                    'hall_type': hall_type,
+                    'movie_name': movie_name,
+                    'show_timestamp': show_timestamp,
+                    'seats_info': seats_info,
                     # 保留原始数据以备后用
                     'raw_data': order
                 }
-                
+
                 standardized.append(standardized_order)
-                
-            except (ValueError, TypeError) as e:
+
+            except Exception as e:
                 logging.warning(f"标准化订单数据失败，跳过此订单: {e}")
+                logging.warning(f"有问题的原始订单数据: {order}")
                 continue
-        
+
+        logging.info(f"数据标准化完成，成功处理 {len(standardized)} 条订单")
         return standardized
     
     def _deduplicate_orders(self, orders):
