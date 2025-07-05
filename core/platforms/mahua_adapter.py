@@ -261,7 +261,7 @@ class MahuaAdapter(BaseAdapter):
                                 logging.error(f"❌ 保存麻花平台新订单到调试文件失败: {e}")
 
                         # 6. 保存新订单到数据库
-                        self.db_manager.save_orders(new_orders)
+                        self.db_manager.save_orders(new_orders, self.name)
 
                         # 7. 返回成功结果
                         return {

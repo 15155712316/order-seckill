@@ -23,6 +23,7 @@ def test_database():
         
         for i, order in enumerate(recent_orders, 1):
             print(f"{i}. 订单ID: {order['order_id']}")
+            print(f"   平台: {order.get('platform', '未知')}")
             print(f"   影院: {order['cinema_name']}")
             print(f"   影厅: {order['hall_type']}")
             print(f"   城市: {order['city']}")

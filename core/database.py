@@ -55,6 +55,7 @@ class DatabaseManager:
                 hall_type TEXT NOT NULL,
                 movie_name TEXT NOT NULL,
                 show_timestamp TEXT,
+                platform TEXT NOT NULL,
                 raw_data TEXT NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -80,13 +81,14 @@ class DatabaseManager:
             logging.error(f"创建数据表失败: {e}")
             raise
     
-    def save_orders(self, orders: List[Dict[str, Any]]) -> int:
+    def save_orders(self, orders: List[Dict[str, Any]], platform_name: str) -> int:
         """
         保存订单列表到数据库
-        
+
         Args:
             orders (List[Dict[str, Any]]): 标准化后的订单列表
-            
+            platform_name (str): 平台名称
+
         Returns:
             int: 成功插入的订单数量
         """
@@ -99,9 +101,9 @@ class DatabaseManager:
             # 准备插入语句
             insert_sql = """
             INSERT OR IGNORE INTO orders (
-                order_id, bidding_price, seat_count, city, cinema_name, 
-                hall_type, movie_name, show_timestamp, raw_data
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                order_id, bidding_price, seat_count, city, cinema_name,
+                hall_type, movie_name, show_timestamp, platform, raw_data
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             
             inserted_count = 0
@@ -124,7 +126,7 @@ class DatabaseManager:
                     # 执行插入
                     cursor.execute(insert_sql, (
                         order_id, bidding_price, seat_count, city, cinema_name,
-                        hall_type, movie_name, show_timestamp, raw_data
+                        hall_type, movie_name, show_timestamp, platform_name, raw_data
                     ))
                     
                     # 检查是否实际插入了数据（rowcount > 0 表示插入成功）

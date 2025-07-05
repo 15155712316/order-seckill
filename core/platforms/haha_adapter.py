@@ -125,7 +125,7 @@ class HahaAdapter(BaseAdapter):
             new_orders = self._deduplicate_orders(standardized_orders)
 
             # 7. 保存新订单到数据库
-            self.db_manager.save_orders(new_orders)
+            self.db_manager.save_orders(new_orders, self.name)
 
             # 8. 调试功能：专门处理 is_lock=1 的订单
             locked_orders_info = []
