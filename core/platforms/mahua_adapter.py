@@ -12,6 +12,7 @@ import collections
 import aiohttp
 from datetime import datetime
 from .base_adapter import BaseAdapter
+from ..database import DatabaseManager
 from config import (
     MAHUA_DEV_CODE, MAHUA_SECRET_KEY, MAHUA_CHANNEL_ID,
     MAHUA_LOGIN_URL, MAHUA_ORDER_LIST_URL, MAX_ORDERS_CACHE
@@ -31,6 +32,9 @@ class MahuaAdapter(BaseAdapter):
 
         # 用于去重的双端队列，最多保存指定数量的已见过的订单ID
         self.seen_order_ids = collections.deque(maxlen=MAX_ORDERS_CACHE)
+
+        # 初始化数据库管理器
+        self.db_manager = DatabaseManager()
 
         logging.info(f"{self.name}平台适配器初始化完成")
     
@@ -256,7 +260,10 @@ class MahuaAdapter(BaseAdapter):
                             except Exception as e:
                                 logging.error(f"❌ 保存麻花平台新订单到调试文件失败: {e}")
 
-                        # 6. 返回成功结果
+                        # 6. 保存新订单到数据库
+                        self.db_manager.save_orders(new_orders)
+
+                        # 7. 返回成功结果
                         return {
                             'name': self.name,
                             'success': True,

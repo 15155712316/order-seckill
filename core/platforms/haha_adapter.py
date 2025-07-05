@@ -14,6 +14,7 @@ from datetime import datetime
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 from .base_adapter import BaseAdapter
+from ..database import DatabaseManager
 from config import API_URL, API_HEADERS, API_DATA_PAYLOAD, API_TOKEN, MAX_ORDERS_CACHE
 
 
@@ -25,6 +26,9 @@ class HahaAdapter(BaseAdapter):
         super().__init__(name)
         # 用于去重的双端队列，最多保存指定数量的已见过的订单ID
         self.seen_order_ids = collections.deque(maxlen=MAX_ORDERS_CACHE)
+
+        # 初始化数据库管理器
+        self.db_manager = DatabaseManager()
 
         logging.info(f"{self.name}平台适配器初始化完成")
     
@@ -120,23 +124,8 @@ class HahaAdapter(BaseAdapter):
             # 6. 去重处理
             new_orders = self._deduplicate_orders(standardized_orders)
 
-            # 7. 增量式保存新订单到result.log
-            if len(new_orders) > 0:
-                try:
-                    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    with open('result.log', 'a', encoding='utf-8') as f:
-                        f.write("=" * 80 + "\n")
-                        f.write(f"轮询时间: {current_time}\n")
-                        f.write(f"新订单数量: {len(new_orders)} 条\n")
-                        f.write("=" * 80 + "\n")
-                        f.write("新增订单详细信息:\n")
-                        f.write(json.dumps(new_orders, ensure_ascii=False, indent=2))
-                        f.write("\n" + "=" * 80 + "\n\n")
-                    logging.info(f"✅ 已保存 {len(new_orders)} 条新订单到 result.log 文件")
-                except Exception as e:
-                    logging.error(f"❌ 保存新订单到result.log失败: {e}")
-            else:
-                logging.info("ℹ️ 本次轮询无新订单，未更新 result.log 文件")
+            # 7. 保存新订单到数据库
+            self.db_manager.save_orders(new_orders)
 
             # 8. 调试功能：专门处理 is_lock=1 的订单
             locked_orders_info = []
