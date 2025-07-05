@@ -14,7 +14,7 @@
       "hall_list": [
         "IMAX"
       ],
-      "cost": 40.0
+      "cost": 42.0
     },
     "profit_logic": {
       "min_profit_threshold": 18.0
@@ -70,7 +70,7 @@
     "rule_name": "浙江卢米埃",
     "enabled": true,
     "match_conditions": {
-      "city": "杭州",
+      "city": "杭州,绍兴",
       "cinema_keywords": [
         "卢米埃"
       ]
@@ -105,6 +105,28 @@
     },
     "profit_logic": {
       "min_profit_threshold": 15.0
+    }
+  },
+  {
+    "rule_id": "e448866e-8c07-4f25-af8c-51d2079dfa79",
+    "rule_name": "全国卢米埃通兑",
+    "enabled": true,
+    "match_conditions": {
+      "city": "北京",
+      "cinema_keywords": [
+        "卢米埃"
+      ]
+    },
+    "hall_logic": {
+      "mode": "EXCLUDE",
+      "hall_list": [
+        "IMAX",
+        "VIP"
+      ],
+      "cost": 49.0
+    },
+    "profit_logic": {
+      "min_profit_threshold": 20.0
     }
   }
 ]

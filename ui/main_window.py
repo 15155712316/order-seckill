@@ -70,9 +70,9 @@ class Worker(QObject):
 
                     # 处理结果
                     successful_platforms = []
-                    all_new_orders = []
+                    total_new_orders = 0
 
-                    for result in results:
+                    for i, result in enumerate(results):
                         if isinstance(result, Exception):
                             logging.error(f"平台适配器执行出错: {result}")
                             continue
@@ -84,35 +84,66 @@ class Worker(QObject):
 
                             if success:
                                 successful_platforms.append(platform_name)
-                                all_new_orders.extend(orders)
+                                total_new_orders += len(orders)
                                 logging.info(f"{platform_name}平台获取成功，新增 {len(orders)} 条订单")
+
+                                # 遍历当前平台的订单并检查规则匹配
+                                for order in orders:
+                                    # 使用规则引擎检查订单
+                                    match_result = engine.check_order(order)
+
+                                    # 如果匹配成功，发射信号
+                                    if match_result is not None:
+                                        # 创建包含平台信息的opportunity_data
+                                        opportunity_data = {
+                                            'platform': platform_name,  # 新增平台信息
+                                            'timestamp': order.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+                                            'show_time': order.get('show_time', '未知'),
+                                            'total_profit': match_result['total_profit'],
+                                            'seat_count': match_result['seat_count'],
+                                            'rule_name': match_result['rule_name'],
+                                            'order_details': match_result['order_details']
+                                        }
+
+                                        logging.info(f"发现抢单机会: {match_result['rule_name']} - 总利润{match_result['total_profit']:.1f}元 ({match_result['seat_count']}张票)")
+
+                                        # 发射信号到主窗口
+                                        self.new_opportunity.emit(opportunity_data)
                             else:
                                 logging.warning(f"{platform_name}平台获取失败")
                         else:
                             # 兼容旧版本HahaAdapter返回格式（直接返回订单列表）
                             if isinstance(result, list):
-                                successful_platforms.append(HAHA_PLATFORM_NAME)
-                                all_new_orders.extend(result)
-                                logging.info(f"{HAHA_PLATFORM_NAME}平台获取成功，新增 {len(result)} 条订单")
+                                platform_name = HAHA_PLATFORM_NAME
+                                successful_platforms.append(platform_name)
+                                total_new_orders += len(result)
+                                logging.info(f"{platform_name}平台获取成功，新增 {len(result)} 条订单")
 
-                    # 遍历所有新订单并检查规则匹配
-                    for order in all_new_orders:
-                        # 使用规则引擎检查订单
-                        result = engine.check_order(order)
+                                # 遍历当前平台的订单并检查规则匹配
+                                for order in result:
+                                    # 使用规则引擎检查订单
+                                    match_result = engine.check_order(order)
 
-                        # 如果匹配成功，发射信号
-                        if result is not None:
-                            # 添加时间戳和场次信息到结果中
-                            result['timestamp'] = order.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S'))
-                            result['show_time'] = order.get('show_time', '未知')
+                                    # 如果匹配成功，发射信号
+                                    if match_result is not None:
+                                        # 创建包含平台信息的opportunity_data
+                                        opportunity_data = {
+                                            'platform': platform_name,  # 新增平台信息
+                                            'timestamp': order.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
+                                            'show_time': order.get('show_time', '未知'),
+                                            'total_profit': match_result['total_profit'],
+                                            'seat_count': match_result['seat_count'],
+                                            'rule_name': match_result['rule_name'],
+                                            'order_details': match_result['order_details']
+                                        }
 
-                            logging.info(f"发现抢单机会: {result['rule_name']} - 总利润{result['total_profit']:.1f}元 ({result['seat_count']}张票)")
+                                        logging.info(f"发现抢单机会: {match_result['rule_name']} - 总利润{match_result['total_profit']:.1f}元 ({match_result['seat_count']}张票)")
 
-                            # 发射信号到主窗口
-                            self.new_opportunity.emit(result)
+                                        # 发射信号到主窗口
+                                        self.new_opportunity.emit(opportunity_data)
 
                     # 发射轮询周期完成信号
-                    self.cycle_finished.emit(successful_platforms, len(all_new_orders))
+                    self.cycle_finished.emit(successful_platforms, total_new_orders)
 
                     # 控制API调用频率
                     await asyncio.sleep(API_REQUEST_INTERVAL)
@@ -177,18 +208,19 @@ class MainWindow(QMainWindow):
         self.table = QTableWidget()
 
         # 设置表格表头
-        self.table.setColumnCount(7)
-        headers = ['触发时间', '利润', '影院名称', '影厅', '场次', '竞标价', '匹配规则']
+        self.table.setColumnCount(8)
+        headers = ['平台', '触发时间', '利润', '影院名称', '影厅', '场次', '竞标价', '匹配规则']
         self.table.setHorizontalHeaderLabels(headers)
 
         # 设置表格列宽
-        self.table.setColumnWidth(0, 150)  # 触发时间
-        self.table.setColumnWidth(1, 80)   # 利润
-        self.table.setColumnWidth(2, 200)  # 影院名称
-        self.table.setColumnWidth(3, 100)  # 影厅
-        self.table.setColumnWidth(4, 120)  # 场次
-        self.table.setColumnWidth(5, 80)   # 竞标价
-        self.table.setColumnWidth(6, 180)  # 匹配规则
+        self.table.setColumnWidth(0, 60)   # 平台
+        self.table.setColumnWidth(1, 150)  # 触发时间
+        self.table.setColumnWidth(2, 80)   # 利润
+        self.table.setColumnWidth(3, 200)  # 影院名称
+        self.table.setColumnWidth(4, 100)  # 影厅
+        self.table.setColumnWidth(5, 120)  # 场次
+        self.table.setColumnWidth(6, 80)   # 竞标价
+        self.table.setColumnWidth(7, 180)  # 匹配规则
 
         # 创建布局并添加表格
         monitoring_layout = QVBoxLayout()
@@ -689,12 +721,13 @@ class MainWindow(QMainWindow):
     def add_opportunity_to_table(self, opportunity_data):
         """槽函数：接收抢单机会数据并添加到表格中"""
         try:
-            # 提取利润信息用于语音播报
+            # 提取平台和利润信息用于语音播报
+            platform_name = opportunity_data.get('platform', '未知')
             total_profit = opportunity_data.get('total_profit', 0)
 
             # 语音播报新机会
             try:
-                alert_text = ALERT_TEXT_TEMPLATE.format(profit=round(total_profit))
+                alert_text = ALERT_TEXT_TEMPLATE.format(platform=platform_name, profit=round(total_profit))
                 self.tts_player.play(alert_text)
             except Exception as e:
                 logging.error(f"语音播报失败: {e}")
@@ -703,39 +736,43 @@ class MainWindow(QMainWindow):
             self.table.insertRow(0)
 
             # 从opportunity_data字典中提取信息并填充到表格
-            # 列顺序：['触发时间', '利润', '影院名称', '影厅', '场次', '竞标价', '匹配规则']
+            # 列顺序：['平台', '触发时间', '利润', '影院名称', '影厅', '场次', '竞标价', '匹配规则']
+
+            # 平台
+            platform_item = QTableWidgetItem(platform_name)
+            self.table.setItem(0, 0, platform_item)
 
             # 触发时间
             timestamp_item = QTableWidgetItem(opportunity_data.get('timestamp', ''))
-            self.table.setItem(0, 0, timestamp_item)
+            self.table.setItem(0, 1, timestamp_item)
 
             # 利润（红色字体显示）
             seat_count = opportunity_data.get('seat_count', 1)
             profit_item = QTableWidgetItem(f"{total_profit:.1f}元 ({seat_count}张票)")
             profit_item.setForeground(QColor(255, 0, 0))  # 红色字体
-            self.table.setItem(0, 1, profit_item)
+            self.table.setItem(0, 2, profit_item)
 
             # 影院名称
             order_details = opportunity_data.get('order_details', {})
             cinema_item = QTableWidgetItem(order_details.get('cinema_name', ''))
-            self.table.setItem(0, 2, cinema_item)
+            self.table.setItem(0, 3, cinema_item)
 
             # 影厅
             hall_item = QTableWidgetItem(order_details.get('hall_type', ''))
-            self.table.setItem(0, 3, hall_item)
+            self.table.setItem(0, 4, hall_item)
 
             # 场次
             show_time_item = QTableWidgetItem(opportunity_data.get('show_time', ''))
-            self.table.setItem(0, 4, show_time_item)
+            self.table.setItem(0, 5, show_time_item)
 
             # 竞标价
             bidding_price = order_details.get('bidding_price', 0)
             price_item = QTableWidgetItem(f"{bidding_price:.1f}元")
-            self.table.setItem(0, 5, price_item)
+            self.table.setItem(0, 6, price_item)
 
             # 匹配规则
             rule_item = QTableWidgetItem(opportunity_data.get('rule_name', ''))
-            self.table.setItem(0, 6, rule_item)
+            self.table.setItem(0, 7, rule_item)
 
             # 限制表格行数，避免数据过多
             if self.table.rowCount() > 100:

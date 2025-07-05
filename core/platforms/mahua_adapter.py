@@ -10,7 +10,6 @@ import time
 import hashlib
 import collections
 import aiohttp
-from datetime import datetime
 from .base_adapter import BaseAdapter
 from ..database import DatabaseManager
 from config import (
@@ -161,10 +160,6 @@ class MahuaAdapter(BaseAdapter):
                 # 验证价格字段的有效性
                 if bidding_price <= 0:
                     logging.debug(f"麻花平台订单 {order_id} 的竞标价格为0或负数: {bidding_price}")
-
-                # 记录使用的价格字段来源（用于调试）
-                price_source = 'discountPriceUp' if order.get('discountPriceUp') is not None else 'salePrice'
-                logging.debug(f"麻花平台订单 {order_id} 使用价格字段: {price_source} = {bidding_price}")
                 
                 # 构建标准化订单对象
                 standardized_order = {
@@ -259,32 +254,7 @@ class MahuaAdapter(BaseAdapter):
 
                         logging.info(f"{self.name}平台去重完成，从 {len(standardized_orders)} 条订单中筛选出 {len(new_orders)} 条新订单")
 
-                        # 5. 调试功能：保存麻花平台新订单的影院和厅信息
-                        if len(new_orders) > 0:
-                            try:
-                                from datetime import datetime
-                                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-                                # 提取影院名和厅名信息
-                                cinema_hall_info = []
-                                for order in new_orders:
-                                    cinema_info = {
-                                        "cinema_name": order.get('cinema_name', ''),
-                                        "hall_type": order.get('hall_type', '')
-                                    }
-                                    cinema_hall_info.append(cinema_info)
-
-                                with open('mahua.log', 'a', encoding='utf-8') as f:
-                                    f.write("=" * 60 + "\n")
-                                    f.write(f"调试时间: {current_time}\n")
-                                    f.write(f"麻花平台新订单数量: {len(new_orders)} 条\n")
-                                    f.write("=" * 60 + "\n")
-                                    f.write("麻花平台新订单影院和厅信息:\n")
-                                    f.write(json.dumps(cinema_hall_info, ensure_ascii=False, indent=2))
-                                    f.write("\n" + "=" * 60 + "\n\n")
-                                logging.debug(f"🎬 已保存 {len(new_orders)} 条麻花平台新订单到调试文件 mahua.log")
-                            except Exception as e:
-                                logging.error(f"❌ 保存麻花平台新订单到调试文件失败: {e}")
 
                         # 6. 保存新订单到数据库
                         self.db_manager.save_orders(new_orders, self.name)

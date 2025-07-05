@@ -10,7 +10,6 @@ import collections
 import aiohttp
 import hashlib
 import base64
-from datetime import datetime
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 from .base_adapter import BaseAdapter
@@ -64,7 +63,6 @@ class HahaAdapter(BaseAdapter):
             # 解析JSON响应并提取数据
             try:
                 # 1. 解析JSON响应
-                logging.info("解析API返回的JSON响应...")
                 api_response = json.loads(response_text)
 
                 # 检查响应状态（根据实际API响应结构调整）
@@ -87,12 +85,9 @@ class HahaAdapter(BaseAdapter):
                     logging.warning("API响应中没有找到有效数据")
                     return []
 
-                logging.info(f"成功提取原始数据，类型: {type(raw_data)}")
-
                 # 3. 判断是否需要解密
                 if isinstance(raw_data, str):
                     # 如果是字符串，可能是加密数据
-                    logging.info("检测到字符串数据，尝试解密...")
                     decrypted_orders = await self._decrypt_data(raw_data)
                     if not decrypted_orders:
                         logging.warning("解密后没有获得有效的订单数据")
@@ -127,48 +122,18 @@ class HahaAdapter(BaseAdapter):
             # 7. 保存新订单到数据库
             self.db_manager.save_orders(new_orders, self.name)
 
-            # 8. 调试功能：专门处理 is_lock=1 的订单
-            locked_orders_info = []
+            # 8. 调试信息：统计 is_lock=1 的订单
+            locked_orders_count = 0
             for order in new_orders:
                 if order.get('raw_data', {}).get('is_lock') == '1':
-                    # 只保存影院名字和厅名字
-                    locked_info = {
-                        "cinema_name": order.get('cinema_name', ''),
-                        "hall_type": order.get('hall_type', '')
-                    }
-                    locked_orders_info.append(locked_info)
+                    locked_orders_count += 1
 
-            # 只有存在 is_lock=1 订单时才保存调试文件
-            if len(locked_orders_info) > 0:
-                try:
-                    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    with open('is_lock.log', 'a', encoding='utf-8') as f:
-                        f.write("=" * 60 + "\n")
-                        f.write(f"调试时间: {current_time}\n")
-                        f.write(f"is_lock=1订单数量: {len(locked_orders_info)} 条\n")
-                        f.write("=" * 60 + "\n")
-                        f.write("is_lock=1订单影院和厅信息:\n")
-                        f.write(json.dumps(locked_orders_info, ensure_ascii=False, indent=2))
-                        f.write("\n" + "=" * 60 + "\n\n")
-                    logging.debug(f"🔒 已保存 {len(locked_orders_info)} 条 is_lock=1 订单到调试文件 is_lock.log")
-                except Exception as e:
-                    logging.error(f"❌ 保存 is_lock=1 订单到调试文件失败: {e}")
+            # 记录调试信息到控制台日志
+            if locked_orders_count > 0:
+                logging.debug(f"🔒 发现 {locked_orders_count} 条 is_lock=1 订单")
 
-            # 9. 调试功能：保存所有未过滤的原始订单数据
-            if len(decrypted_orders) > 0:
-                try:
-                    current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                    with open('all.log', 'a', encoding='utf-8') as f:
-                        f.write("=" * 80 + "\n")
-                        f.write(f"调试时间: {current_time}\n")
-                        f.write(f"未过滤订单总数: {len(decrypted_orders)} 条\n")
-                        f.write("=" * 80 + "\n")
-                        f.write("所有未过滤订单详细信息:\n")
-                        f.write(json.dumps(decrypted_orders, ensure_ascii=False, indent=2))
-                        f.write("\n" + "=" * 80 + "\n\n")
-                    logging.debug(f"📋 已保存 {len(decrypted_orders)} 条未过滤订单到调试文件 all.log")
-                except Exception as e:
-                    logging.error(f"❌ 保存未过滤订单到调试文件失败: {e}")
+            # 9. 记录处理统计信息
+            logging.debug(f"📋 本次处理了 {len(decrypted_orders)} 条原始订单，过滤后 {len(filtered_orders)} 条，新增 {len(new_orders)} 条")
 
             logging.info(f"成功处理 {len(new_orders)} 个新订单")
 
@@ -234,8 +199,6 @@ class HahaAdapter(BaseAdapter):
             list: 解密后的订单列表，如果解密失败返回空列表
         """
         try:
-            logging.info("开始解密加密数据...")
-
             # 调用经过验证的AES解密函数
             decrypted_json_str = self._aes_decrypt(encrypted_data, API_TOKEN)
 
@@ -244,7 +207,6 @@ class HahaAdapter(BaseAdapter):
                 return []
 
             # 解析JSON数据
-            logging.info("解析解密后的JSON数据...")
             decrypted_data = json.loads(decrypted_json_str)
 
             # 检查解密后的数据格式
