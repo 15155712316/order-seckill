@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>抢单数据复盘中心</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Microsoft YaHei', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 15px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.3);
+        }
+
+        .stats {
+            display: flex;
+            justify-content: center;
+            gap: 30px;
+            margin-top: 20px;
+        }
+
+        .stat-item {
+            background: rgba(255, 255, 255, 0.2);
+            padding: 15px 25px;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        .stat-number {
+            font-size: 2em;
+            font-weight: bold;
+            display: block;
+        }
+
+        .stat-label {
+            font-size: 0.9em;
+            opacity: 0.9;
+        }
+
+        .controls {
+            padding: 20px 30px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .filter-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .filter-group label {
+            font-weight: 600;
+            color: #495057;
+        }
+
+        .filter-group select, .filter-group input {
+            padding: 8px 12px;
+            border: 1px solid #ced4da;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        .refresh-btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: transform 0.2s;
+        }
+
+        .refresh-btn:hover {
+            transform: translateY(-2px);
+        }
+
+        .table-container {
+            padding: 30px;
+            overflow-x: auto;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 50px;
+            font-size: 1.2em;
+            color: #6c757d;
+        }
+
+        .loading::after {
+            content: '';
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #667eea;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 10px;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        #orders-table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            background: white;
+            border-radius: 10px;
+            overflow: hidden;
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+        }
+
+        #orders-table thead {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        #orders-table th {
+            padding: 15px 12px;
+            text-align: left;
+            font-weight: 600;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        #orders-table td {
+            padding: 12px;
+            border-bottom: 1px solid #e9ecef;
+            font-size: 14px;
+        }
+
+        #orders-table tbody tr {
+            transition: background-color 0.2s;
+        }
+
+        #orders-table tbody tr:hover {
+            background-color: #f8f9fa;
+        }
+
+        .platform-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-weight: 600;
+            text-align: center;
+            min-width: 50px;
+        }
+
+        .platform-haha {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+
+        .platform-mahua {
+            background: #f3e5f5;
+            color: #7b1fa2;
+        }
+
+        .price {
+            font-weight: 600;
+            color: #d32f2f;
+        }
+
+        .order-id {
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #666;
+        }
+
+        .cinema-name {
+            font-weight: 500;
+            color: #1976d2;
+        }
+
+        .movie-name {
+            font-style: italic;
+            color: #388e3c;
+        }
+
+        .timestamp {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .error {
+            text-align: center;
+            padding: 50px;
+            color: #d32f2f;
+            font-size: 1.1em;
+        }
+
+        @media (max-width: 768px) {
+            .header h1 {
+                font-size: 2em;
+            }
+            
+            .stats {
+                flex-direction: column;
+                gap: 15px;
+            }
+            
+            .controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            
+            .table-container {
+                padding: 15px;
+            }
+            
+            #orders-table th,
+            #orders-table td {
+                padding: 8px 6px;
+                font-size: 12px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎬 抢单数据复盘中心</h1>
+            <div class="stats">
+                <div class="stat-item">
+                    <span class="stat-number" id="total-orders">-</span>
+                    <span class="stat-label">总订单数</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-number" id="haha-orders">-</span>
+                    <span class="stat-label">哈哈平台</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-number" id="mahua-orders">-</span>
+                    <span class="stat-label">麻花平台</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="controls">
+            <div class="filter-group">
+                <label for="platform-filter">平台筛选:</label>
+                <select id="platform-filter">
+                    <option value="">全部平台</option>
+                    <option value="哈哈">哈哈平台</option>
+                    <option value="麻花">麻花平台</option>
+                </select>
+            </div>
+            
+            <div class="filter-group">
+                <label for="city-filter">城市筛选:</label>
+                <select id="city-filter">
+                    <option value="">全部城市</option>
+                </select>
+            </div>
+            
+            <div class="filter-group">
+                <label for="limit-input">显示条数:</label>
+                <input type="number" id="limit-input" value="50" min="10" max="1000" step="10">
+            </div>
+            
+            <button class="refresh-btn" onclick="loadOrders()">🔄 刷新数据</button>
+        </div>
+
+        <div class="table-container">
+            <div id="loading" class="loading">正在加载订单数据...</div>
+            
+            <table id="orders-table" style="display: none;">
+                <thead>
+                    <tr>
+                        <th>平台</th>
+                        <th>订单ID</th>
+                        <th>城市</th>
+                        <th>影院名称</th>
+                        <th>影厅</th>
+                        <th>电影名称</th>
+                        <th>票数</th>
+                        <th>竞标价</th>
+                        <th>创建时间</th>
+                    </tr>
+                </thead>
+                <tbody id="orders-tbody">
+                </tbody>
+            </table>
+            
+            <div id="error" class="error" style="display: none;">
+                ❌ 加载数据失败，请检查API服务器是否正常运行
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let allOrders = [];
+        let filteredOrders = [];
+
+        // 页面加载完成后执行
+        window.addEventListener('DOMContentLoaded', function() {
+            loadOrders();
+            
+            // 绑定筛选事件
+            document.getElementById('platform-filter').addEventListener('change', filterOrders);
+            document.getElementById('city-filter').addEventListener('change', filterOrders);
+            document.getElementById('limit-input').addEventListener('change', filterOrders);
+        });
+
+        // 加载订单数据
+        async function loadOrders() {
+            const loading = document.getElementById('loading');
+            const table = document.getElementById('orders-table');
+            const error = document.getElementById('error');
+            
+            // 显示加载状态
+            loading.style.display = 'block';
+            table.style.display = 'none';
+            error.style.display = 'none';
+            
+            try {
+                // 发送API请求
+                const response = await fetch('/api/orders');
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    allOrders = data.data;
+                    updateStats();
+                    updateCityFilter();
+                    filterOrders();
+                    
+                    // 隐藏加载状态，显示表格
+                    loading.style.display = 'none';
+                    table.style.display = 'table';
+                } else {
+                    throw new Error(data.message || '获取数据失败');
+                }
+                
+            } catch (err) {
+                console.error('加载订单数据失败:', err);
+                
+                // 显示错误信息
+                loading.style.display = 'none';
+                error.style.display = 'block';
+                error.innerHTML = `❌ 加载数据失败: ${err.message}`;
+            }
+        }
+
+        // 更新统计信息
+        function updateStats() {
+            const totalOrders = allOrders.length;
+            const hahaOrders = allOrders.filter(order => order.platform === '哈哈').length;
+            const mahuaOrders = allOrders.filter(order => order.platform === '麻花').length;
+            
+            document.getElementById('total-orders').textContent = totalOrders;
+            document.getElementById('haha-orders').textContent = hahaOrders;
+            document.getElementById('mahua-orders').textContent = mahuaOrders;
+        }
+
+        // 更新城市筛选器
+        function updateCityFilter() {
+            const cityFilter = document.getElementById('city-filter');
+            const cities = [...new Set(allOrders.map(order => order.city))].sort();
+            
+            // 清空现有选项（保留"全部城市"）
+            cityFilter.innerHTML = '<option value="">全部城市</option>';
+            
+            // 添加城市选项
+            cities.forEach(city => {
+                if (city) {
+                    const option = document.createElement('option');
+                    option.value = city;
+                    option.textContent = city;
+                    cityFilter.appendChild(option);
+                }
+            });
+        }
+
+        // 筛选订单
+        function filterOrders() {
+            const platformFilter = document.getElementById('platform-filter').value;
+            const cityFilter = document.getElementById('city-filter').value;
+            const limit = parseInt(document.getElementById('limit-input').value) || 50;
+            
+            // 应用筛选条件
+            filteredOrders = allOrders.filter(order => {
+                const platformMatch = !platformFilter || order.platform === platformFilter;
+                const cityMatch = !cityFilter || order.city === cityFilter;
+                return platformMatch && cityMatch;
+            });
+            
+            // 限制显示数量
+            const displayOrders = filteredOrders.slice(0, limit);
+            
+            // 渲染表格
+            renderTable(displayOrders);
+        }
+
+        // 渲染表格
+        function renderTable(orders) {
+            const tbody = document.getElementById('orders-tbody');
+            tbody.innerHTML = '';
+            
+            orders.forEach(order => {
+                const row = document.createElement('tr');
+                
+                // 平台徽章
+                const platformClass = order.platform === '哈哈' ? 'platform-haha' : 'platform-mahua';
+                
+                row.innerHTML = `
+                    <td><span class="platform-badge ${platformClass}">${order.platform}</span></td>
+                    <td><span class="order-id">${order.order_id}</span></td>
+                    <td>${order.city}</td>
+                    <td><span class="cinema-name">${order.cinema_name}</span></td>
+                    <td>${order.hall_type}</td>
+                    <td><span class="movie-name">${order.movie_name}</span></td>
+                    <td>${order.seat_count}张</td>
+                    <td><span class="price">¥${order.bidding_price}</span></td>
+                    <td><span class="timestamp">${formatDateTime(order.created_at)}</span></td>
+                `;
+                
+                tbody.appendChild(row);
+            });
+            
+            // 如果没有数据，显示提示
+            if (orders.length === 0) {
+                const row = document.createElement('tr');
+                row.innerHTML = '<td colspan="9" style="text-align: center; padding: 30px; color: #6c757d;">暂无符合条件的订单数据</td>';
+                tbody.appendChild(row);
+            }
+        }
+
+        // 格式化日期时间
+        function formatDateTime(dateTimeStr) {
+            const date = new Date(dateTimeStr);
+            return date.toLocaleString('zh-CN', {
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            });
+        }
+    </script>
+</body>
+</html>

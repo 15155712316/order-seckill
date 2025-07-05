@@ -4,9 +4,10 @@
 Web API服务器 - 提供订单数据的HTTP API接口
 """
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from core.database import DatabaseManager
 import logging
+import os
 
 # 配置日志
 logging.basicConfig(
@@ -200,8 +201,46 @@ def health_check():
 @app.route('/', methods=['GET'])
 def index():
     """
-    根路径，提供API文档信息
-    
+    根路径，提供前端页面
+
+    Returns:
+        HTML: 前端页面
+    """
+    try:
+        # 检查index.html文件是否存在
+        if os.path.exists('index.html'):
+            return send_from_directory('.', 'index.html')
+        else:
+            # 如果没有前端页面，返回API文档信息
+            api_info = {
+                'service': '抢单提醒系统 Web API',
+                'version': '1.2.0',
+                'description': '提供订单数据的HTTP API接口',
+                'endpoints': {
+                    'GET /': '获取前端页面或API文档信息',
+                    'GET /api/health': '健康检查',
+                    'GET /api/orders': '获取所有订单数据',
+                    'GET /api/orders/count': '获取订单总数',
+                    'GET /api/orders/recent?limit=N': '获取最近N条订单数据'
+                },
+                'example_usage': {
+                    'get_all_orders': 'http://localhost:5000/api/orders',
+                    'get_recent_orders': 'http://localhost:5000/api/orders/recent?limit=20',
+                    'get_orders_count': 'http://localhost:5000/api/orders/count',
+                    'health_check': 'http://localhost:5000/api/health'
+                }
+            }
+            return jsonify(api_info)
+    except Exception as e:
+        logging.error(f"提供前端页面失败: {e}")
+        return jsonify({'error': '页面加载失败'}), 500
+
+
+@app.route('/api/docs', methods=['GET'])
+def api_docs():
+    """
+    API文档信息
+
     Returns:
         JSON: API文档信息
     """
@@ -210,20 +249,22 @@ def index():
         'version': '1.2.0',
         'description': '提供订单数据的HTTP API接口',
         'endpoints': {
-            'GET /': '获取API文档信息',
+            'GET /': '获取前端页面',
+            'GET /api/docs': '获取API文档信息',
             'GET /api/health': '健康检查',
             'GET /api/orders': '获取所有订单数据',
             'GET /api/orders/count': '获取订单总数',
             'GET /api/orders/recent?limit=N': '获取最近N条订单数据'
         },
         'example_usage': {
+            'frontend_page': 'http://localhost:5000/',
             'get_all_orders': 'http://localhost:5000/api/orders',
             'get_recent_orders': 'http://localhost:5000/api/orders/recent?limit=20',
             'get_orders_count': 'http://localhost:5000/api/orders/count',
             'health_check': 'http://localhost:5000/api/health'
         }
     }
-    
+
     return jsonify(api_info)
 
 
