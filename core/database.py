@@ -196,7 +196,7 @@ class DatabaseManager:
     def get_orders_count(self) -> int:
         """
         获取数据库中的订单总数
-        
+
         Returns:
             int: 订单总数
         """
@@ -205,10 +205,64 @@ class DatabaseManager:
             cursor.execute("SELECT COUNT(*) FROM orders")
             count = cursor.fetchone()[0]
             return count
-            
+
         except Exception as e:
             logging.error(f"查询订单总数失败: {e}")
             return 0
+
+    def get_all_orders_as_dicts(self) -> List[Dict[str, Any]]:
+        """
+        获取数据库中的所有订单数据，并转换为字典列表
+
+        Returns:
+            List[Dict[str, Any]]: 包含所有订单数据的字典列表
+        """
+        try:
+            cursor = self.connection.cursor()
+
+            # 查询所有订单数据，按创建时间倒序排列
+            query_sql = """
+            SELECT id, order_id, bidding_price, seat_count, city, cinema_name,
+                   hall_type, movie_name, show_timestamp, platform, raw_data, created_at
+            FROM orders
+            ORDER BY created_at DESC
+            """
+
+            cursor.execute(query_sql)
+            rows = cursor.fetchall()
+
+            # 转换为字典列表
+            orders = []
+            for row in rows:
+                order_dict = {
+                    'id': row[0],
+                    'order_id': row[1],
+                    'bidding_price': row[2],
+                    'seat_count': row[3],
+                    'city': row[4],
+                    'cinema_name': row[5],
+                    'hall_type': row[6],
+                    'movie_name': row[7],
+                    'show_timestamp': row[8],
+                    'platform': row[9],
+                    'raw_data': row[10],
+                    'created_at': row[11]
+                }
+
+                # 解析raw_data JSON字符串
+                try:
+                    order_dict['raw_data'] = json.loads(order_dict['raw_data'])
+                except:
+                    order_dict['raw_data'] = {}
+
+                orders.append(order_dict)
+
+            logging.info(f"成功查询到 {len(orders)} 条订单数据")
+            return orders
+
+        except Exception as e:
+            logging.error(f"查询所有订单数据失败: {e}")
+            return []
     
     def close(self):
         """关闭数据库连接"""
