@@ -10,35 +10,97 @@
       ]
     },
     "hall_logic": {
-      "mode": "ALL",
+      "mode": "INCLUDE",
       "hall_list": [
         "IMAX"
       ],
-      "cost": 37.0
+      "cost": 40.0
     },
     "profit_logic": {
-      "min_profit_threshold": 10.0
+      "min_profit_threshold": 18.0
     }
   },
   {
     "rule_id": "5a24b4bf-6e63-4a6d-9a2f-18abe32471e5",
-    "rule_name": "33",
+    "rule_name": "万达vip",
     "enabled": true,
     "match_conditions": {
-      "city": "3",
+      "city": "",
       "cinema_keywords": [
-        "3"
+        "万达",
+        "影城"
       ]
     },
     "hall_logic": {
       "mode": "INCLUDE",
       "hall_list": [
-        "33"
+        "vip"
+      ],
+      "cost": 50.0
+    },
+    "profit_logic": {
+      "min_profit_threshold": 15.0
+    }
+  },
+  {
+    "rule_id": "583d7206-fa23-40a8-bfac-35a7405cdae9",
+    "rule_name": "万达测试",
+    "enabled": true,
+    "match_conditions": {
+      "city": "",
+      "cinema_keywords": [
+        "万达影城"
+      ]
+    },
+    "hall_logic": {
+      "mode": "ALL",
+      "hall_list": [],
+      "cost": 37.0
+    },
+    "profit_logic": {
+      "min_profit_threshold": 20.0
+    }
+  },
+  {
+    "rule_id": "6df08760-328c-49da-8a3d-4d20f9214b24",
+    "rule_name": "浙江卢米埃",
+    "enabled": true,
+    "match_conditions": {
+      "city": "杭州",
+      "cinema_keywords": [
+        "卢米埃"
+      ]
+    },
+    "hall_logic": {
+      "mode": "EXCLUDE",
+      "hall_list": [
+        "IMAX",
+        "VIP",
+        "情侣"
       ],
       "cost": 33.0
     },
     "profit_logic": {
-      "min_profit_threshold": 33.0
+      "min_profit_threshold": 20.0
+    }
+  },
+  {
+    "rule_id": "5639cde2-aba0-4f8a-baf3-87c2d9e83f9e",
+    "rule_name": "郑州大地光源巨幕影城（欢乐广场店）",
+    "enabled": true,
+    "match_conditions": {
+      "city": "郑州",
+      "cinema_keywords": [
+        "大地光源巨幕"
+      ]
+    },
+    "hall_logic": {
+      "mode": "ALL",
+      "hall_list": [],
+      "cost": 20.0
+    },
+    "profit_logic": {
+      "min_profit_threshold": 15.0
     }
   }
 ]

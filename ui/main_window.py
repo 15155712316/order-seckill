@@ -22,7 +22,9 @@ from PyQt6.QtGui import QColor
 
 from core.engine import RuleEngine
 from core.platforms.haha_adapter import HahaAdapter
-from config import RULES_FILE, API_REQUEST_INTERVAL
+from core.platforms.mahua_adapter import MahuaAdapter
+from core.audio import TTSPlayer
+from config import RULES_FILE, API_REQUEST_INTERVAL, ALERT_TEXT_TEMPLATE, HAHA_PLATFORM_NAME, MAHUA_PLATFORM_NAME
 
 
 class Worker(QObject):
@@ -32,6 +34,8 @@ class Worker(QObject):
     new_opportunity = pyqtSignal(dict)
     # 定义状态更新信号，用于向主窗口发送状态信息
     status_update = pyqtSignal(str)
+    # 定义轮询周期完成信号，发送成功平台列表和新订单总数
+    cycle_finished = pyqtSignal(list, int)
 
     def __init__(self, engine):
         """初始化Worker，接受规则引擎实例"""
@@ -44,22 +48,55 @@ class Worker(QObject):
         engine = self.engine
 
         async def main_loop():
-            """主要的异步循环，从API获取订单数据"""
+            """主要的异步循环，从多个平台获取订单数据"""
             logging.info("后台监控线程启动")
 
-            # 实例化哈哈平台适配器
-            adapter = HahaAdapter()
+            # 实例化多个平台适配器
+            adapters = [
+                HahaAdapter(HAHA_PLATFORM_NAME),
+                MahuaAdapter(MAHUA_PLATFORM_NAME)
+            ]
 
             while True:
                 try:
                     # 发射状态更新信号 - 开始获取订单
-                    self.status_update.emit("正在获取订单...")
+                    self.status_update.emit("正在获取多平台订单...")
 
-                    # 调用适配器获取最新订单（经过去重）
-                    latest_orders = await adapter.fetch_and_process()
+                    # 并发执行所有平台的任务
+                    results = await asyncio.gather(
+                        *[adapter.fetch_and_process() for adapter in adapters],
+                        return_exceptions=True
+                    )
 
-                    # 遍历新订单并检查规则匹配
-                    for order in latest_orders:
+                    # 处理结果
+                    successful_platforms = []
+                    all_new_orders = []
+
+                    for result in results:
+                        if isinstance(result, Exception):
+                            logging.error(f"平台适配器执行出错: {result}")
+                            continue
+
+                        if isinstance(result, dict):
+                            platform_name = result.get('name', '未知平台')
+                            success = result.get('success', False)
+                            orders = result.get('orders', [])
+
+                            if success:
+                                successful_platforms.append(platform_name)
+                                all_new_orders.extend(orders)
+                                logging.info(f"{platform_name}平台获取成功，新增 {len(orders)} 条订单")
+                            else:
+                                logging.warning(f"{platform_name}平台获取失败")
+                        else:
+                            # 兼容旧版本HahaAdapter返回格式（直接返回订单列表）
+                            if isinstance(result, list):
+                                successful_platforms.append(HAHA_PLATFORM_NAME)
+                                all_new_orders.extend(result)
+                                logging.info(f"{HAHA_PLATFORM_NAME}平台获取成功，新增 {len(result)} 条订单")
+
+                    # 遍历所有新订单并检查规则匹配
+                    for order in all_new_orders:
                         # 使用规则引擎检查订单
                         result = engine.check_order(order)
 
@@ -74,8 +111,8 @@ class Worker(QObject):
                             # 发射信号到主窗口
                             self.new_opportunity.emit(result)
 
-                    # 发射状态更新信号 - 获取完成，等待下次轮询
-                    self.status_update.emit(f"获取完成（{len(latest_orders)}个新订单），{API_REQUEST_INTERVAL}秒后开始下一次轮询...")
+                    # 发射轮询周期完成信号
+                    self.cycle_finished.emit(successful_platforms, len(all_new_orders))
 
                     # 控制API调用频率
                     await asyncio.sleep(API_REQUEST_INTERVAL)
@@ -112,6 +149,9 @@ class MainWindow(QMainWindow):
 
         # 创建规则引擎实例
         self.engine = RuleEngine(RULES_FILE)
+
+        # 初始化语音播放器
+        self.tts_player = TTSPlayer()
 
         # 连接信号与槽
         self.connect_signals()
@@ -638,6 +678,7 @@ class MainWindow(QMainWindow):
         self.thread.started.connect(self.worker.run)
         self.worker.new_opportunity.connect(self.add_opportunity_to_table)
         self.worker.status_update.connect(self.statusBar().showMessage)
+        self.worker.cycle_finished.connect(self.update_status_bar)
 
         # 启动线程
         self.thread.start()
@@ -648,6 +689,16 @@ class MainWindow(QMainWindow):
     def add_opportunity_to_table(self, opportunity_data):
         """槽函数：接收抢单机会数据并添加到表格中"""
         try:
+            # 提取利润信息用于语音播报
+            total_profit = opportunity_data.get('total_profit', 0)
+
+            # 语音播报新机会
+            try:
+                alert_text = ALERT_TEXT_TEMPLATE.format(profit=round(total_profit))
+                self.tts_player.play(alert_text)
+            except Exception as e:
+                logging.error(f"语音播报失败: {e}")
+
             # 在表格顶部插入新行
             self.table.insertRow(0)
 
@@ -659,7 +710,6 @@ class MainWindow(QMainWindow):
             self.table.setItem(0, 0, timestamp_item)
 
             # 利润（红色字体显示）
-            total_profit = opportunity_data.get('total_profit', 0)
             seat_count = opportunity_data.get('seat_count', 1)
             profit_item = QTableWidgetItem(f"{total_profit:.1f}元 ({seat_count}张票)")
             profit_item.setForeground(QColor(255, 0, 0))  # 红色字体
@@ -700,6 +750,26 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             logging.error(f"添加数据到表格时出错: {e}")
+
+    def update_status_bar(self, platform_names, new_order_count):
+        """
+        更新状态栏显示多平台状态
+
+        Args:
+            platform_names (list): 成功获取数据的平台名称列表
+            new_order_count (int): 新订单总数
+        """
+        try:
+            if platform_names:
+                platforms_text = ', '.join(platform_names)
+                status_text = f"({platforms_text}) 获取完成，新增 {new_order_count} 条订单。{API_REQUEST_INTERVAL}秒后开始下一次轮询..."
+            else:
+                status_text = f"所有平台获取失败，{API_REQUEST_INTERVAL}秒后重试..."
+
+            self.statusBar().showMessage(status_text)
+
+        except Exception as e:
+            logging.error(f"更新状态栏时出错: {e}")
 
     def closeEvent(self, event):
         """重写关闭事件，实现优雅退出"""

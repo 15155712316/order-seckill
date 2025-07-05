@@ -4,7 +4,14 @@
 配置文件 - 存放敏感和可变的配置信息
 """
 
-# 哈哈平台API配置
+# --- 麻花平台配置 ---
+MAHUA_DEV_CODE = "b2b4378b42df47518fc3511488d6d555"
+MAHUA_SECRET_KEY = "69eaf6b39da442809644dc2e3e233cf5"
+MAHUA_CHANNEL_ID = 'OP0002'
+MAHUA_LOGIN_URL = "https://openapi.quanma51.com/api/user-server/user/dev/login"
+MAHUA_ORDER_LIST_URL = "https://openapi.quanma51.com/api/movie-server/movie/bidding/info/list"
+
+# --- 哈哈平台配置 ---
 API_URL = 'https://hahapiao.cn/api/Synchro/pcToList'
 API_TOKEN = "64932f01040374d3a7dc9438a48c5178"
 
@@ -35,6 +42,10 @@ API_DATA_PAYLOAD = 'limit=200'
 APP_NAME = "抢单提醒系统"
 APP_VERSION = "1.0.0"
 
+# 平台名称配置
+HAHA_PLATFORM_NAME = "哈哈"
+MAHUA_PLATFORM_NAME = "麻花"
+
 # 日志配置
 LOG_LEVEL = "DEBUG"
 LOG_FILE = "app.log"
@@ -49,3 +60,7 @@ API_REQUEST_INTERVAL = 5  # API请求间隔（秒）
 
 # 规则引擎配置
 RULES_FILE = "rules.json"
+
+# 语音提醒配置
+TTS_CACHE_DIR = "tts_cache"  # 语音缓存文件夹
+ALERT_TEXT_TEMPLATE = "新机会，利润约为{profit}元"  # 语音播报的文本模板

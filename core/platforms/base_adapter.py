@@ -14,9 +14,14 @@ class BaseAdapter(ABC):
     所有平台适配器都必须继承此类并实现其抽象方法
     """
     
-    def __init__(self):
-        """初始化基类适配器"""
-        pass
+    def __init__(self, name: str):
+        """
+        初始化基类适配器
+
+        Args:
+            name (str): 平台名称
+        """
+        self.name = name
     
     @abstractmethod
     async def fetch_and_process(self):
