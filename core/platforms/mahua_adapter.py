@@ -97,10 +97,19 @@ class MahuaAdapter(BaseAdapter):
     def _standardize_orders(self, raw_orders):
         """
         标准化麻花平台的订单数据
-        
+
+        字段映射关系：
+        - order_id: id 或 orderId
+        - bidding_price: discountPriceUp (主要) 或 salePrice (备选)
+        - seat_count: buyNum 或 seatCount
+        - city: movieCityName
+        - cinema_name: movieCinemaName
+        - hall_type: movieHallName
+        - movie_name: movieName
+
         Args:
             raw_orders (list): 原始订单数据列表
-            
+
         Returns:
             list: 标准化后的订单列表
         """
@@ -116,10 +125,15 @@ class MahuaAdapter(BaseAdapter):
                     logging.warning(f"麻花平台订单缺少ID字段，跳过此订单: {order}")
                     continue
                 
-                # 安全地转换bidding_price字段（根据官方文档使用salePrice）
+                # 安全地转换bidding_price字段（使用discountPriceUp作为麻花平台的正确竞标价格字段）
                 bidding_price = 0.0
                 try:
-                    price_value = order.get('salePrice', 0.0)
+                    # 优先使用discountPriceUp字段，如果不存在则回退到salePrice
+                    price_value = order.get('discountPriceUp')
+                    if price_value is None:
+                        price_value = order.get('salePrice', 0.0)
+                        logging.debug(f"麻花平台订单 {order_id} 未找到discountPriceUp字段，使用salePrice: {price_value}")
+
                     bidding_price = float(price_value) if price_value else 0.0
                 except (ValueError, TypeError):
                     logging.warning(f"麻花平台订单 {order_id} 的价格字段转换失败，使用默认值0.0")
@@ -139,6 +153,18 @@ class MahuaAdapter(BaseAdapter):
                 cinema_name = order.get('movieCinemaName', '')
                 hall_type = order.get('movieHallName', '')
                 movie_name = order.get('movieName', '')
+
+                # 数据验证：确保关键字段存在且有效
+                if not cinema_name and not movie_name:
+                    logging.warning(f"麻花平台订单 {order_id} 缺少关键信息（影院名和电影名），但仍保留此订单")
+
+                # 验证价格字段的有效性
+                if bidding_price <= 0:
+                    logging.debug(f"麻花平台订单 {order_id} 的竞标价格为0或负数: {bidding_price}")
+
+                # 记录使用的价格字段来源（用于调试）
+                price_source = 'discountPriceUp' if order.get('discountPriceUp') is not None else 'salePrice'
+                logging.debug(f"麻花平台订单 {order_id} 使用价格字段: {price_source} = {bidding_price}")
                 
                 # 构建标准化订单对象
                 standardized_order = {

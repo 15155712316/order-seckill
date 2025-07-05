@@ -4,10 +4,11 @@
 Web API服务器 - 提供订单数据的HTTP API接口
 """
 
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, request, send_from_directory, Response
 from core.database import DatabaseManager
 import logging
 import os
+import json
 
 # 配置日志
 logging.basicConfig(
@@ -17,9 +18,29 @@ logging.basicConfig(
 
 # 创建Flask应用实例
 app = Flask(__name__)
+app.config['JSON_AS_ASCII'] = False
 
 # 全局数据库管理器实例
 db_manager = None
+
+
+def json_response(data, status_code=200):
+    """
+    创建JSON响应，确保中文字符正确显示
+
+    Args:
+        data: 要序列化的数据
+        status_code: HTTP状态码
+
+    Returns:
+        Response: Flask响应对象
+    """
+    json_str = json.dumps(data, ensure_ascii=False, indent=2)
+    return Response(
+        json_str,
+        status=status_code,
+        mimetype='application/json; charset=utf-8'
+    )
 
 
 def get_db_manager():
@@ -54,21 +75,21 @@ def get_orders():
         }
         
         logging.info(f"API请求成功：返回 {len(orders)} 条订单数据")
-        return jsonify(response_data)
-        
+        return json_response(response_data)
+
     except Exception as e:
         # 错误处理
         error_message = f"获取订单数据失败: {str(e)}"
         logging.error(error_message)
-        
+
         response_data = {
             'success': False,
             'message': error_message,
             'total_count': 0,
             'data': []
         }
-        
-        return jsonify(response_data), 500
+
+        return json_response(response_data, 500)
 
 
 @app.route('/api/orders/count', methods=['GET'])
@@ -94,20 +115,20 @@ def get_orders_count():
         }
         
         logging.info(f"API请求成功：订单总数 {total_count}")
-        return jsonify(response_data)
-        
+        return json_response(response_data)
+
     except Exception as e:
         # 错误处理
         error_message = f"获取订单总数失败: {str(e)}"
         logging.error(error_message)
-        
+
         response_data = {
             'success': False,
             'message': error_message,
             'total_count': 0
         }
-        
-        return jsonify(response_data), 500
+
+        return json_response(response_data, 500)
 
 
 @app.route('/api/orders/recent', methods=['GET'])
@@ -147,13 +168,13 @@ def get_recent_orders():
         }
         
         logging.info(f"API请求成功：返回最近 {len(orders)} 条订单数据")
-        return jsonify(response_data)
-        
+        return json_response(response_data)
+
     except Exception as e:
         # 错误处理
         error_message = f"获取最近订单数据失败: {str(e)}"
         logging.error(error_message)
-        
+
         response_data = {
             'success': False,
             'message': error_message,
@@ -161,8 +182,8 @@ def get_recent_orders():
             'limit': limit if 'limit' in locals() else 10,
             'data': []
         }
-        
-        return jsonify(response_data), 500
+
+        return json_response(response_data, 500)
 
 
 @app.route('/api/health', methods=['GET'])
@@ -185,8 +206,8 @@ def health_check():
             'total_orders': total_count
         }
         
-        return jsonify(response_data)
-        
+        return json_response(response_data)
+
     except Exception as e:
         response_data = {
             'success': False,
@@ -194,8 +215,8 @@ def health_check():
             'database_status': 'error',
             'total_orders': 0
         }
-        
-        return jsonify(response_data), 500
+
+        return json_response(response_data, 500)
 
 
 @app.route('/', methods=['GET'])
@@ -230,10 +251,10 @@ def index():
                     'health_check': 'http://localhost:5000/api/health'
                 }
             }
-            return jsonify(api_info)
+            return json_response(api_info)
     except Exception as e:
         logging.error(f"提供前端页面失败: {e}")
-        return jsonify({'error': '页面加载失败'}), 500
+        return json_response({'error': '页面加载失败'}, 500)
 
 
 @app.route('/api/docs', methods=['GET'])
@@ -265,7 +286,7 @@ def api_docs():
         }
     }
 
-    return jsonify(api_info)
+    return json_response(api_info)
 
 
 if __name__ == '__main__':

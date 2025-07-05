@@ -10,6 +10,47 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Any
 
+# 导入时区相关模块
+try:
+    import pytz
+    PYTZ_AVAILABLE = True
+except ImportError:
+    PYTZ_AVAILABLE = False
+
+try:
+    from zoneinfo import ZoneInfo
+    ZONEINFO_AVAILABLE = True
+except ImportError:
+    ZONEINFO_AVAILABLE = False
+
+
+def get_china_time() -> str:
+    """
+    获取当前的中国时区时间字符串
+
+    Returns:
+        str: 格式化的中国时区时间字符串 (YYYY-MM-DD HH:MM:SS)
+    """
+    try:
+        # 优先使用pytz，因为它更稳定
+        if PYTZ_AVAILABLE:
+            china_tz = pytz.timezone('Asia/Shanghai')
+            china_time = datetime.now(china_tz)
+            return china_time.strftime('%Y-%m-%d %H:%M:%S')
+        elif ZONEINFO_AVAILABLE:
+            # 使用zoneinfo (Python 3.9+)
+            china_time = datetime.now(ZoneInfo("Asia/Shanghai"))
+            return china_time.strftime('%Y-%m-%d %H:%M:%S')
+        else:
+            # 如果都不可用，使用本地时间
+            logging.info("时区库不可用，使用本地时间")
+            return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+    except Exception as e:
+        logging.warning(f"获取中国时区时间失败，使用本地时间: {e}")
+        # 如果时区设置失败，使用本地时间
+        return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
 
 class DatabaseManager:
     """数据库管理类，负责订单数据的存储和查询"""
@@ -57,7 +98,7 @@ class DatabaseManager:
                 show_timestamp TEXT,
                 platform TEXT NOT NULL,
                 raw_data TEXT NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT NOT NULL
             )
             """
             
@@ -102,8 +143,8 @@ class DatabaseManager:
             insert_sql = """
             INSERT OR IGNORE INTO orders (
                 order_id, bidding_price, seat_count, city, cinema_name,
-                hall_type, movie_name, show_timestamp, platform, raw_data
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                hall_type, movie_name, show_timestamp, platform, raw_data, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             
             inserted_count = 0
@@ -119,14 +160,17 @@ class DatabaseManager:
                     hall_type = order.get('hall_type', '')
                     movie_name = order.get('movie_name', '')
                     show_timestamp = order.get('show_time', order.get('timestamp', ''))
-                    
+
                     # 将原始数据转换为JSON字符串
                     raw_data = json.dumps(order.get('raw_data', {}), ensure_ascii=False)
-                    
+
+                    # 获取当前的中国时区时间
+                    china_time = get_china_time()
+
                     # 执行插入
                     cursor.execute(insert_sql, (
                         order_id, bidding_price, seat_count, city, cinema_name,
-                        hall_type, movie_name, show_timestamp, platform_name, raw_data
+                        hall_type, movie_name, show_timestamp, platform_name, raw_data, china_time
                     ))
                     
                     # 检查是否实际插入了数据（rowcount > 0 表示插入成功）
