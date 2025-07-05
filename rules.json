@@ -53,8 +53,12 @@
       ]
     },
     "hall_logic": {
-      "mode": "ALL",
-      "hall_list": [],
+      "mode": "EXCLUDE",
+      "hall_list": [
+        "IMAX",
+        "VIP",
+        "4DX"
+      ],
       "cost": 37.0
     },
     "profit_logic": {

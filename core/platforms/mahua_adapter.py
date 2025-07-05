@@ -8,12 +8,13 @@ import json
 import logging
 import time
 import hashlib
+import collections
 import aiohttp
 from datetime import datetime
 from .base_adapter import BaseAdapter
 from config import (
     MAHUA_DEV_CODE, MAHUA_SECRET_KEY, MAHUA_CHANNEL_ID,
-    MAHUA_LOGIN_URL, MAHUA_ORDER_LIST_URL
+    MAHUA_LOGIN_URL, MAHUA_ORDER_LIST_URL, MAX_ORDERS_CACHE
 )
 
 
@@ -23,11 +24,14 @@ class MahuaAdapter(BaseAdapter):
     def __init__(self, name: str):
         """初始化麻花平台适配器"""
         super().__init__(name)
-        
+
         # Token缓存机制
         self.token = None
         self.token_expiry_time = 0
-        
+
+        # 用于去重的双端队列，最多保存指定数量的已见过的订单ID
+        self.seen_order_ids = collections.deque(maxlen=MAX_ORDERS_CACHE)
+
         logging.info(f"{self.name}平台适配器初始化完成")
     
     async def _get_token(self):
@@ -108,10 +112,10 @@ class MahuaAdapter(BaseAdapter):
                     logging.warning(f"麻花平台订单缺少ID字段，跳过此订单: {order}")
                     continue
                 
-                # 安全地转换bidding_price字段
+                # 安全地转换bidding_price字段（根据官方文档使用salePrice）
                 bidding_price = 0.0
                 try:
-                    price_value = order.get('price', order.get('bidPrice', 0.0))
+                    price_value = order.get('salePrice', 0.0)
                     bidding_price = float(price_value) if price_value else 0.0
                 except (ValueError, TypeError):
                     logging.warning(f"麻花平台订单 {order_id} 的价格字段转换失败，使用默认值0.0")
@@ -126,10 +130,10 @@ class MahuaAdapter(BaseAdapter):
                     logging.warning(f"麻花平台订单 {order_id} 的座位数字段转换失败，使用默认值1")
                     seat_count = 1
                 
-                # 提取字符串字段（提供默认值）
-                city = order.get('movieCityName', order.get('cityName', ''))
-                cinema_name = order.get('cinemaName', '')
-                hall_type = order.get('hallName', '')
+                # 提取字符串字段（根据麻花平台官方文档字段映射）
+                city = order.get('movieCityName', '')
+                cinema_name = order.get('movieCinemaName', '')
+                hall_type = order.get('movieHallName', '')
                 movie_name = order.get('movieName', '')
                 
                 # 构建标准化订单对象
@@ -213,12 +217,50 @@ class MahuaAdapter(BaseAdapter):
                         
                         # 3. 标准化订单数据
                         standardized_orders = self._standardize_orders(raw_orders)
-                        
-                        # 4. 返回成功结果（麻花平台不需要解密和去重）
+
+                        # 4. 去重处理 - 只返回新订单
+                        new_orders = []
+                        for order in standardized_orders:
+                            order_id = order.get('order_id')
+                            if order_id and order_id not in self.seen_order_ids:
+                                # 添加到已见过的订单ID缓存
+                                self.seen_order_ids.append(order_id)
+                                new_orders.append(order)
+
+                        logging.info(f"{self.name}平台去重完成，从 {len(standardized_orders)} 条订单中筛选出 {len(new_orders)} 条新订单")
+
+                        # 5. 调试功能：保存麻花平台新订单的影院和厅信息
+                        if len(new_orders) > 0:
+                            try:
+                                from datetime import datetime
+                                current_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+                                # 提取影院名和厅名信息
+                                cinema_hall_info = []
+                                for order in new_orders:
+                                    cinema_info = {
+                                        "cinema_name": order.get('cinema_name', ''),
+                                        "hall_type": order.get('hall_type', '')
+                                    }
+                                    cinema_hall_info.append(cinema_info)
+
+                                with open('mahua.log', 'a', encoding='utf-8') as f:
+                                    f.write("=" * 60 + "\n")
+                                    f.write(f"调试时间: {current_time}\n")
+                                    f.write(f"麻花平台新订单数量: {len(new_orders)} 条\n")
+                                    f.write("=" * 60 + "\n")
+                                    f.write("麻花平台新订单影院和厅信息:\n")
+                                    f.write(json.dumps(cinema_hall_info, ensure_ascii=False, indent=2))
+                                    f.write("\n" + "=" * 60 + "\n\n")
+                                logging.debug(f"🎬 已保存 {len(new_orders)} 条麻花平台新订单到调试文件 mahua.log")
+                            except Exception as e:
+                                logging.error(f"❌ 保存麻花平台新订单到调试文件失败: {e}")
+
+                        # 6. 返回成功结果
                         return {
                             'name': self.name,
                             'success': True,
-                            'orders': standardized_orders
+                            'orders': new_orders
                         }
                     else:
                         logging.error(f"❌ {self.name}平台API返回错误: {response_data.get('rtnMsg')}")
