@@ -2,24 +2,30 @@
 # -*- coding: utf-8 -*-
 """
 规则引擎模块 - 负责加载和处理抢单决策规则
+支持关键词策略和白名单策略两种模式
 """
 
 import json
 import logging
+from typing import Dict, List, Any, Optional, Set
+from .database import DatabaseManager
 
 
 class RuleEngine:
     """规则引擎类 - 负责加载和处理抢单决策规则"""
 
-    def __init__(self, rules_filepath):
+    def __init__(self, rules_filepath: str, db_manager: DatabaseManager = None):
         """
         初始化规则引擎
 
         Args:
             rules_filepath (str): rules.json文件的路径
+            db_manager (DatabaseManager): 数据库管理器实例
         """
         self.filepath = rules_filepath
         self.rules = []  # 存储加载后的所有规则
+        self.db_manager = db_manager or DatabaseManager()  # 数据库管理器
+        self.whitelist_cache = {}  # 白名单策略的影院缓存 {policy_id: set}
         self._load_rules()  # 加载和预处理规则
 
     def _load_rules(self):
@@ -41,6 +47,15 @@ class RuleEngine:
                 if 'hall_logic' in processed_rule and 'hall_list' in processed_rule['hall_logic']:
                     hall_list = processed_rule['hall_logic']['hall_list']
                     processed_rule['hall_logic']['hall_set'] = set(hall_list)
+
+                # 如果是白名单策略，从数据库加载影院名单
+                match_conditions = processed_rule.get('match_conditions', {})
+                if match_conditions.get('match_mode') == 'whitelist':
+                    policy_id = processed_rule.get('rule_id')
+                    if policy_id:
+                        cinema_set = self.db_manager.load_cinemas_for_policy(policy_id)
+                        self.whitelist_cache[policy_id] = cinema_set
+                        logging.info(f"为白名单策略 {policy_id} 加载了 {len(cinema_set)} 个影院")
 
                 processed_rules.append(processed_rule)
 
@@ -99,19 +114,40 @@ class RuleEngine:
             if rule_city and rule_city != order_city:
                 continue  # 城市不匹配，跳到下一条规则
 
-            # 2. 影院关键词匹配
-            cinema_keywords = match_conditions.get('cinema_keywords', [])
-            if cinema_keywords:
-                # 检查所有关键词是否都出现在影院名称中
-                keywords_matched = True
-                for keyword in cinema_keywords:
-                    keyword_lower = keyword.lower().strip()
-                    if keyword_lower not in order_cinema_name:
-                        keywords_matched = False
-                        break
+            # 2. 影院匹配（支持关键词策略和白名单策略）
+            match_mode = match_conditions.get('match_mode', 'keywords')
 
-                if not keywords_matched:
-                    continue  # 关键词不匹配，跳到下一条规则
+            if match_mode == 'whitelist':
+                # 白名单策略：检查影院是否在白名单中
+                policy_id = rule.get('rule_id')
+                if policy_id and policy_id in self.whitelist_cache:
+                    whitelist_cinemas = self.whitelist_cache[policy_id]
+                    # 检查订单影院是否在白名单中（支持部分匹配）
+                    cinema_matched = False
+                    for whitelist_cinema in whitelist_cinemas:
+                        whitelist_cinema_lower = whitelist_cinema.lower().strip()
+                        if (whitelist_cinema_lower in order_cinema_name or
+                            order_cinema_name in whitelist_cinema_lower):
+                            cinema_matched = True
+                            break
+
+                    if not cinema_matched:
+                        continue  # 影院不在白名单中，跳到下一条规则
+                else:
+                    continue  # 白名单策略但没有加载到影院数据，跳过
+            else:
+                # 关键词策略：检查所有关键词是否都出现在影院名称中
+                cinema_keywords = match_conditions.get('cinema_keywords', [])
+                if cinema_keywords:
+                    keywords_matched = True
+                    for keyword in cinema_keywords:
+                        keyword_lower = keyword.lower().strip()
+                        if keyword_lower not in order_cinema_name:
+                            keywords_matched = False
+                            break
+
+                    if not keywords_matched:
+                        continue  # 关键词不匹配，跳到下一条规则
 
             # 3. 影厅逻辑匹配
             hall_mode = hall_logic.get('mode', 'ALL').upper()
@@ -167,3 +203,83 @@ class RuleEngine:
 
         # 如果循环正常结束，说明没有任何规则匹配成功
         return None
+
+    def import_whitelist_cinemas(self, policy_id: str, cinema_names: Set[str]) -> bool:
+        """
+        导入白名单影院数据
+
+        Args:
+            policy_id (str): 策略ID
+            cinema_names (Set[str]): 影院名称集合
+
+        Returns:
+            bool: 导入是否成功
+        """
+        try:
+            # 先清空旧数据
+            self.db_manager.clear_cinemas_for_policy(policy_id)
+
+            # 添加新数据
+            added_count = self.db_manager.add_cinemas_to_whitelist(policy_id, cinema_names)
+
+            # 更新缓存
+            self.whitelist_cache[policy_id] = cinema_names.copy()
+
+            logging.info(f"成功导入白名单策略 {policy_id} 的 {added_count} 个影院")
+            return True
+
+        except Exception as e:
+            logging.error(f"导入白名单影院失败: {e}")
+            return False
+
+    def get_whitelist_cinema_count(self, policy_id: str) -> int:
+        """
+        获取白名单策略的影院数量
+
+        Args:
+            policy_id (str): 策略ID
+
+        Returns:
+            int: 影院数量
+        """
+        if policy_id in self.whitelist_cache:
+            return len(self.whitelist_cache[policy_id])
+        return 0
+
+    def reload_whitelist_for_policy(self, policy_id: str):
+        """
+        重新加载指定策略的白名单数据
+
+        Args:
+            policy_id (str): 策略ID
+        """
+        try:
+            cinema_set = self.db_manager.load_cinemas_for_policy(policy_id)
+            self.whitelist_cache[policy_id] = cinema_set
+            logging.info(f"重新加载白名单策略 {policy_id} 的 {len(cinema_set)} 个影院")
+        except Exception as e:
+            logging.error(f"重新加载白名单策略失败: {e}")
+
+    def save_rules(self, rules_data: List[Dict]) -> bool:
+        """
+        保存规则到文件
+
+        Args:
+            rules_data (List[Dict]): 规则数据列表
+
+        Returns:
+            bool: 保存是否成功
+        """
+        try:
+            with open(self.filepath, 'w', encoding='utf-8') as file:
+                json.dump(rules_data, file, ensure_ascii=False, indent=2)
+
+            # 重新加载规则
+            self._load_rules()
+
+            logging.info(f"成功保存 {len(rules_data)} 条规则")
+            return True
+
+        except Exception as e:
+            logging.error(f"保存规则失败: {e}")
+            return False

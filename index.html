@@ -222,6 +222,48 @@
             color: #666;
         }
 
+        /* 限时订单样式 */
+        .limit-order-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 8px;
+            font-size: 10px;
+            font-weight: bold;
+            text-align: center;
+            min-width: 30px;
+            background: #ff4444;
+            color: white;
+            text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.3);
+        }
+
+        .normal-order-badge {
+            display: inline-block;
+            padding: 2px 6px;
+            border-radius: 8px;
+            font-size: 10px;
+            font-weight: bold;
+            text-align: center;
+            min-width: 30px;
+            background: #e0e0e0;
+            color: #666;
+        }
+
+        /* 限时订单行样式 */
+        .limit-order-row {
+            background-color: #fff5f5 !important;
+            border-left: 4px solid #ff4444 !important;
+        }
+
+        .limit-order-row:hover {
+            background-color: #ffebee !important;
+        }
+
+        /* 限时订单ID样式 */
+        .limit-order-id {
+            color: #d32f2f !important;
+            font-weight: bold !important;
+        }
+
         .error {
             text-align: center;
             padding: 50px;
@@ -273,6 +315,10 @@
                     <span class="stat-number" id="mahua-orders">-</span>
                     <span class="stat-label">麻花平台</span>
                 </div>
+                <div class="stat-item">
+                    <span class="stat-number" id="limit-orders">-</span>
+                    <span class="stat-label">限时订单</span>
+                </div>
             </div>
         </div>
 
@@ -292,6 +338,15 @@
                     <option value="">全部城市</option>
                 </select>
             </div>
+
+            <div class="filter-group">
+                <label for="limit-filter">订单类型:</label>
+                <select id="limit-filter">
+                    <option value="">全部订单</option>
+                    <option value="limit">限时订单</option>
+                    <option value="normal">普通订单</option>
+                </select>
+            </div>
             
             <div class="filter-group">
                 <label for="limit-input">显示条数:</label>
@@ -308,6 +363,7 @@
                 <thead>
                     <tr>
                         <th>平台</th>
+                        <th>限时</th>
                         <th>订单ID</th>
                         <th>城市</th>
                         <th>影院名称</th>
@@ -339,6 +395,7 @@
             // 绑定筛选事件
             document.getElementById('platform-filter').addEventListener('change', filterOrders);
             document.getElementById('city-filter').addEventListener('change', filterOrders);
+            document.getElementById('limit-filter').addEventListener('change', filterOrders);
             document.getElementById('limit-input').addEventListener('change', filterOrders);
         });
 
@@ -391,10 +448,12 @@
             const totalOrders = allOrders.length;
             const hahaOrders = allOrders.filter(order => order.platform === '哈哈').length;
             const mahuaOrders = allOrders.filter(order => order.platform === '麻花').length;
-            
+            const limitOrders = allOrders.filter(order => order.is_limit_order === true).length;
+
             document.getElementById('total-orders').textContent = totalOrders;
             document.getElementById('haha-orders').textContent = hahaOrders;
             document.getElementById('mahua-orders').textContent = mahuaOrders;
+            document.getElementById('limit-orders').textContent = limitOrders;
         }
 
         // 更新城市筛选器
@@ -420,18 +479,28 @@
         function filterOrders() {
             const platformFilter = document.getElementById('platform-filter').value;
             const cityFilter = document.getElementById('city-filter').value;
+            const limitFilter = document.getElementById('limit-filter').value;
             const limit = parseInt(document.getElementById('limit-input').value) || 50;
-            
+
             // 应用筛选条件
             filteredOrders = allOrders.filter(order => {
                 const platformMatch = !platformFilter || order.platform === platformFilter;
                 const cityMatch = !cityFilter || order.city === cityFilter;
-                return platformMatch && cityMatch;
+
+                // 限时订单筛选
+                let limitMatch = true;
+                if (limitFilter === 'limit') {
+                    limitMatch = order.is_limit_order === true;
+                } else if (limitFilter === 'normal') {
+                    limitMatch = order.is_limit_order !== true;
+                }
+
+                return platformMatch && cityMatch && limitMatch;
             });
-            
+
             // 限制显示数量
             const displayOrders = filteredOrders.slice(0, limit);
-            
+
             // 渲染表格
             renderTable(displayOrders);
         }
@@ -440,16 +509,33 @@
         function renderTable(orders) {
             const tbody = document.getElementById('orders-tbody');
             tbody.innerHTML = '';
-            
+
             orders.forEach(order => {
                 const row = document.createElement('tr');
-                
+
+                // 检查是否为限时订单
+                const isLimitOrder = order.is_limit_order || false;
+
+                // 如果是限时订单，添加特殊样式
+                if (isLimitOrder) {
+                    row.classList.add('limit-order-row');
+                }
+
                 // 平台徽章
                 const platformClass = order.platform === '哈哈' ? 'platform-haha' : 'platform-mahua';
-                
+
+                // 限时订单标识
+                const limitBadge = isLimitOrder
+                    ? '<span class="limit-order-badge">限时</span>'
+                    : '<span class="normal-order-badge">普通</span>';
+
+                // 订单ID样式（限时订单用红色）
+                const orderIdClass = isLimitOrder ? 'order-id limit-order-id' : 'order-id';
+
                 row.innerHTML = `
                     <td><span class="platform-badge ${platformClass}">${order.platform}</span></td>
-                    <td><span class="order-id">${order.order_id}</span></td>
+                    <td>${limitBadge}</td>
+                    <td><span class="${orderIdClass}">${order.order_id}</span></td>
                     <td>${order.city}</td>
                     <td><span class="cinema-name">${order.cinema_name}</span></td>
                     <td>${order.hall_type}</td>
@@ -458,14 +544,14 @@
                     <td><span class="price">¥${order.bidding_price}</span></td>
                     <td><span class="timestamp">${formatDateTime(order.created_at)}</span></td>
                 `;
-                
+
                 tbody.appendChild(row);
             });
-            
+
             // 如果没有数据，显示提示
             if (orders.length === 0) {
                 const row = document.createElement('tr');
-                row.innerHTML = '<td colspan="9" style="text-align: center; padding: 30px; color: #6c757d;">暂无符合条件的订单数据</td>';
+                row.innerHTML = '<td colspan="10" style="text-align: center; padding: 30px; color: #6c757d;">暂无符合条件的订单数据</td>';
                 tbody.appendChild(row);
             }
         }

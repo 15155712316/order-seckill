@@ -57,7 +57,8 @@
       "hall_list": [
         "IMAX",
         "VIP",
-        "4DX"
+        "4DX",
+        "情侣厅"
       ],
       "cost": 37.0
     },
@@ -123,10 +124,162 @@
         "IMAX",
         "VIP"
       ],
-      "cost": 49.0
+      "cost": 51.0
     },
     "profit_logic": {
       "min_profit_threshold": 20.0
+    }
+  },
+  {
+    "rule_id": "388d61fb-879f-4560-a181-ca910701fcaa",
+    "rule_name": "amg",
+    "enabled": true,
+    "match_conditions": {
+      "city": "上海",
+      "cinema_keywords": [
+        "AMG"
+      ]
+    },
+    "hall_logic": {
+      "mode": "ALL",
+      "hall_list": [],
+      "cost": 35.0
+    },
+    "profit_logic": {
+      "min_profit_threshold": 20.0
+    }
+  },
+  {
+    "rule_id": "8742816d-95e3-44c2-adf5-2605d42ddbba",
+    "rule_name": "南京amg",
+    "enabled": true,
+    "match_conditions": {
+      "city": "南京",
+      "cinema_keywords": [
+        "AMG"
+      ]
+    },
+    "hall_logic": {
+      "mode": "ALL",
+      "hall_list": [],
+      "cost": 26.0
+    },
+    "profit_logic": {
+      "min_profit_threshold": 20.0
+    }
+  },
+  {
+    "rule_id": "7c215ab7-b9ab-4402-b234-6ab7d2c86396",
+    "rule_name": "天津农垦",
+    "enabled": true,
+    "match_conditions": {
+      "city": "天津",
+      "cinema_keywords": [
+        "农垦"
+      ]
+    },
+    "hall_logic": {
+      "mode": "ALL",
+      "hall_list": [],
+      "cost": 15.0
+    },
+    "profit_logic": {
+      "min_profit_threshold": 1.0
+    }
+  },
+  {
+    "rule_id": "aee7a7e5-9514-456d-b3e6-ae50e3bd95bd",
+    "rule_name": "杭州amg",
+    "enabled": true,
+    "match_conditions": {
+      "city": "杭州",
+      "cinema_keywords": [
+        "amg"
+      ]
+    },
+    "hall_logic": {
+      "mode": "ALL",
+      "hall_list": [],
+      "cost": 20.0
+    },
+    "profit_logic": {
+      "min_profit_threshold": 15.0
+    }
+  },
+  {
+    "rule_id": "b62a95ac-c4e0-4234-88b2-b1636186d1b6",
+    "rule_name": "寰映影城imax",
+    "enabled": true,
+    "match_conditions": {
+      "city": "",
+      "cinema_keywords": [
+        "寰映影城"
+      ]
+    },
+    "hall_logic": {
+      "mode": "INCLUDE",
+      "hall_list": [
+        "imax"
+      ],
+      "cost": 43.0
+    },
+    "profit_logic": {
+      "min_profit_threshold": 20.0
+    }
+  },
+  {
+    "rule_id": "34bd0700-8339-48c9-91b4-60b13a267cb9",
+    "rule_name": "寰映影城vip",
+    "enabled": true,
+    "match_conditions": {
+      "city": "",
+      "cinema_keywords": [
+        "寰映影城"
+      ]
+    },
+    "hall_logic": {
+      "mode": "INCLUDE",
+      "hall_list": [
+        "vip"
+      ],
+      "cost": 52.0
+    },
+    "profit_logic": {
+      "min_profit_threshold": 20.0
+    }
+  },
+  {
+    "rule_id": "889bce77-ed25-4793-82fe-9ae5e9ba20cc",
+    "rule_name": "测试白名单",
+    "enabled": true,
+    "match_conditions": {
+      "match_mode": "whitelist",
+      "city": ""
+    },
+    "hall_logic": {
+      "mode": "ALL",
+      "hall_list": [],
+      "cost": 0.0
+    },
+    "profit_logic": {
+      "min_profit_threshold": 0.0
+    },
+    "filter_logic": {
+      "ticket_counts": [
+        2,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "price_range": {
+        "min": 60.0,
+        "max": 200.0
+      },
+      "min_bid_price": 0.0
     }
   }
 ]

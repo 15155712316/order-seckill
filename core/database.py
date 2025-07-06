@@ -80,12 +80,12 @@ class DatabaseManager:
             raise
     
     def _create_table(self):
-        """创建订单数据表"""
+        """创建订单数据表和白名单表"""
         try:
             cursor = self.connection.cursor()
-            
+
             # 创建orders表
-            create_table_sql = """
+            create_orders_table_sql = """
             CREATE TABLE IF NOT EXISTS orders (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 order_id TEXT UNIQUE NOT NULL,
@@ -101,23 +101,39 @@ class DatabaseManager:
                 created_at TEXT NOT NULL
             )
             """
-            
-            cursor.execute(create_table_sql)
-            
+
+            cursor.execute(create_orders_table_sql)
+
+            # 创建白名单影院表
+            create_whitelist_table_sql = """
+            CREATE TABLE IF NOT EXISTS whitelist_cinemas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                policy_id TEXT NOT NULL,
+                cinema_name TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+
+            cursor.execute(create_whitelist_table_sql)
+
             # 创建索引以提高查询性能
             index_sqls = [
+                # orders表索引
                 "CREATE INDEX IF NOT EXISTS idx_order_id ON orders(order_id)",
                 "CREATE INDEX IF NOT EXISTS idx_created_at ON orders(created_at)",
                 "CREATE INDEX IF NOT EXISTS idx_cinema_name ON orders(cinema_name)",
-                "CREATE INDEX IF NOT EXISTS idx_city ON orders(city)"
+                "CREATE INDEX IF NOT EXISTS idx_city ON orders(city)",
+                # whitelist_cinemas表索引
+                "CREATE INDEX IF NOT EXISTS idx_policy_id ON whitelist_cinemas(policy_id)",
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_cinema ON whitelist_cinemas(policy_id, cinema_name)"
             ]
-            
+
             for index_sql in index_sqls:
                 cursor.execute(index_sql)
-            
+
             self.connection.commit()
             logging.info("数据表创建完成")
-            
+
         except Exception as e:
             logging.error(f"创建数据表失败: {e}")
             raise
@@ -308,6 +324,132 @@ class DatabaseManager:
             logging.error(f"查询所有订单数据失败: {e}")
             return []
     
+    def add_cinemas_to_whitelist(self, policy_id: str, cinema_names: set) -> int:
+        """
+        将影院名称批量添加到白名单策略中
+
+        Args:
+            policy_id (str): 策略ID
+            cinema_names (set): 影院名称集合
+
+        Returns:
+            int: 成功添加的影院数量
+        """
+        if not cinema_names:
+            return 0
+
+        try:
+            cursor = self.connection.cursor()
+            current_time = get_china_time()
+
+            # 准备批量插入语句
+            insert_sql = """
+            INSERT OR IGNORE INTO whitelist_cinemas (policy_id, cinema_name, created_at)
+            VALUES (?, ?, ?)
+            """
+
+            # 批量插入数据
+            insert_data = [(policy_id, cinema_name.strip(), current_time)
+                          for cinema_name in cinema_names if cinema_name.strip()]
+
+            cursor.executemany(insert_sql, insert_data)
+            self.connection.commit()
+
+            inserted_count = cursor.rowcount
+            logging.info(f"成功添加 {inserted_count} 个影院到白名单策略 {policy_id}")
+
+            return inserted_count
+
+        except Exception as e:
+            logging.error(f"添加影院到白名单失败: {e}")
+            return 0
+
+    def load_cinemas_for_policy(self, policy_id: str) -> set:
+        """
+        加载指定策略的所有影院名称
+
+        Args:
+            policy_id (str): 策略ID
+
+        Returns:
+            set: 影院名称集合
+        """
+        try:
+            cursor = self.connection.cursor()
+
+            query_sql = """
+            SELECT cinema_name FROM whitelist_cinemas
+            WHERE policy_id = ?
+            ORDER BY cinema_name
+            """
+
+            cursor.execute(query_sql, (policy_id,))
+            rows = cursor.fetchall()
+
+            cinema_names = {row[0] for row in rows}
+            logging.info(f"从数据库加载策略 {policy_id} 的 {len(cinema_names)} 个影院")
+
+            return cinema_names
+
+        except Exception as e:
+            logging.error(f"加载白名单影院失败: {e}")
+            return set()
+
+    def clear_cinemas_for_policy(self, policy_id: str) -> int:
+        """
+        清空指定策略的所有影院记录
+
+        Args:
+            policy_id (str): 策略ID
+
+        Returns:
+            int: 删除的记录数量
+        """
+        try:
+            cursor = self.connection.cursor()
+
+            delete_sql = "DELETE FROM whitelist_cinemas WHERE policy_id = ?"
+            cursor.execute(delete_sql, (policy_id,))
+            self.connection.commit()
+
+            deleted_count = cursor.rowcount
+            logging.info(f"清空策略 {policy_id} 的 {deleted_count} 个影院记录")
+
+            return deleted_count
+
+        except Exception as e:
+            logging.error(f"清空白名单影院失败: {e}")
+            return 0
+
+    def get_whitelist_stats(self) -> dict:
+        """
+        获取白名单统计信息
+
+        Returns:
+            dict: 包含各策略的影院数量统计
+        """
+        try:
+            cursor = self.connection.cursor()
+
+            query_sql = """
+            SELECT policy_id, COUNT(*) as cinema_count
+            FROM whitelist_cinemas
+            GROUP BY policy_id
+            ORDER BY policy_id
+            """
+
+            cursor.execute(query_sql)
+            rows = cursor.fetchall()
+
+            stats = {row[0]: row[1] for row in rows}
+            logging.info(f"白名单统计: {len(stats)} 个策略，总计 {sum(stats.values())} 个影院")
+
+            return stats
+
+        except Exception as e:
+            logging.error(f"获取白名单统计失败: {e}")
+            return {}
+
     def close(self):
         """关闭数据库连接"""
         if self.connection:
@@ -316,7 +458,7 @@ class DatabaseManager:
                 logging.info("数据库连接已关闭")
             except Exception as e:
                 logging.error(f"关闭数据库连接失败: {e}")
-    
+
     def __del__(self):
         """析构函数，确保数据库连接被正确关闭"""
         self.close()

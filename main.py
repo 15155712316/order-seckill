@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 """
 智能抢单决策助手 - 主程序启动文件
-重构后的简洁启动入口
+多元化策略引擎版本 - 支持关键词策略和白名单策略
 """
 
 import sys
 import logging
 from PyQt6.QtWidgets import QApplication
-from ui.main_window import MainWindow
+from ui.main_window_new import MainWindow
 from config import LOG_LEVEL, LOG_FILE, LOG_FORMAT, APP_NAME
 
 # 配置全局日志系统

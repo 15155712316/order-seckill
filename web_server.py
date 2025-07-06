@@ -51,6 +51,28 @@ def get_db_manager():
     return db_manager
 
 
+def is_limit_order(raw_data):
+    """
+    判断是否为限时订单（仅用于Web展示）
+
+    Args:
+        raw_data (dict): 订单的原始数据
+
+    Returns:
+        bool: True表示限时订单，False表示普通订单
+    """
+    try:
+        # 精确的限时订单检测：只检查 order_limit_time_1 字段
+        order_limit_time_1 = raw_data.get('order_limit_time_1', 0)
+
+        # 如果该字段存在且不为0，则判定为限时订单
+        return order_limit_time_1 != 0
+
+    except Exception as e:
+        logging.warning(f"检测限时订单失败: {e}")
+        return False
+
+
 @app.route('/api/orders', methods=['GET'])
 def get_orders():
     """
@@ -65,7 +87,16 @@ def get_orders():
         
         # 从数据库获取所有订单数据
         orders = db.get_all_orders_as_dicts()
-        
+
+        # 为每个订单添加限时订单标识
+        for order in orders:
+            try:
+                # 检查是否为限时订单
+                order['is_limit_order'] = is_limit_order(order.get('raw_data', {}))
+            except Exception as e:
+                logging.warning(f"处理订单 {order.get('order_id', 'unknown')} 的限时标识失败: {e}")
+                order['is_limit_order'] = False
+
         # 构建响应数据
         response_data = {
             'success': True,
@@ -157,7 +188,16 @@ def get_recent_orders():
         
         # 获取最近的订单数据
         orders = db.get_recent_orders(limit=limit)
-        
+
+        # 为每个订单添加限时订单标识
+        for order in orders:
+            try:
+                # 检查是否为限时订单
+                order['is_limit_order'] = is_limit_order(order.get('raw_data', {}))
+            except Exception as e:
+                logging.warning(f"处理订单 {order.get('order_id', 'unknown')} 的限时标识失败: {e}")
+                order['is_limit_order'] = False
+
         # 构建响应数据
         response_data = {
             'success': True,

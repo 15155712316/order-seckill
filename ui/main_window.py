@@ -10,12 +10,14 @@ import uuid
 import asyncio
 import logging
 from datetime import datetime
+import pandas as pd
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QFormLayout,
     QWidget, QTableWidget, QTableWidgetItem, QTabWidget, QSplitter,
     QListWidget, QPushButton, QLineEdit, QRadioButton, QCheckBox,
-    QButtonGroup, QLabel, QMessageBox
+    QButtonGroup, QLabel, QMessageBox, QStackedWidget, QFileDialog,
+    QComboBox, QSpinBox, QDoubleSpinBox, QGroupBox
 )
 from PyQt6.QtCore import QObject, QThread, pyqtSignal, Qt
 from PyQt6.QtGui import QColor
@@ -271,20 +273,28 @@ class MainWindow(QMainWindow):
         left_layout.addWidget(self.rule_list)
 
         # 按钮组
-        self.btn_add_rule = QPushButton("新增规则")
+        self.btn_add_keyword_rule = QPushButton("+ 关键词策略")
+        self.btn_add_whitelist_rule = QPushButton("+ 白名单策略")
         self.btn_delete_rule = QPushButton("删除规则")
         self.btn_save_rules = QPushButton("保存")
 
         # 设置按钮样式
-        for btn in [self.btn_add_rule, self.btn_delete_rule, self.btn_save_rules]:
+        for btn in [self.btn_add_keyword_rule, self.btn_add_whitelist_rule,
+                   self.btn_delete_rule, self.btn_save_rules]:
             btn.setMinimumHeight(35)
 
-        left_layout.addWidget(self.btn_add_rule)
+        # 添加策略类型按钮
+        strategy_layout = QHBoxLayout()
+        strategy_layout.addWidget(self.btn_add_keyword_rule)
+        strategy_layout.addWidget(self.btn_add_whitelist_rule)
+        left_layout.addLayout(strategy_layout)
+
         left_layout.addWidget(self.btn_delete_rule)
         left_layout.addWidget(self.btn_save_rules)
 
         # 连接按钮信号
-        self.btn_add_rule.clicked.connect(self.add_new_rule)
+        self.btn_add_keyword_rule.clicked.connect(self.add_new_rule)  # 暂时使用原有方法
+        self.btn_add_whitelist_rule.clicked.connect(self.add_new_rule)  # 暂时使用原有方法
         self.btn_delete_rule.clicked.connect(self.delete_selected_rule)
         self.btn_save_rules.clicked.connect(self.save_current_rule)
 
@@ -602,9 +612,8 @@ class MainWindow(QMainWindow):
         self.rule_list.currentItemChanged.connect(self.display_rule_details)
 
         # 连接按钮信号（这些在create_left_panel中已经连接，这里重新确认）
-        self.btn_add_rule.clicked.connect(self.add_new_rule)
-        self.btn_delete_rule.clicked.connect(self.delete_selected_rule)
-        self.btn_save_rules.clicked.connect(self.save_current_rule)
+        # 注意：现在使用的是新的按钮名称
+        # self.btn_add_keyword_rule 和 self.btn_add_whitelist_rule 已在 create_left_panel 中连接
 
     def load_rules_to_editor(self):
         """加载规则到编辑器"""
