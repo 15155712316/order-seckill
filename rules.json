@@ -4,6 +4,7 @@
     "rule_name": "万达imax测试",
     "enabled": true,
     "match_conditions": {
+      "match_mode": "keywords",
       "city": "",
       "cinema_keywords": [
         "万达影城"
@@ -17,7 +18,7 @@
       "cost": 42.0
     },
     "profit_logic": {
-      "min_profit_threshold": 18.0
+      "min_profit_threshold": 1.0
     }
   },
   {
@@ -315,7 +316,7 @@
         "min": 50.0,
         "max": 200.0
       },
-      "min_bid_price": 0.0
+      "min_bid_price": 50.0
     }
   },
   {
