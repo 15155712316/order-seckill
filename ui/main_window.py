@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-主窗口GUI模块 - 包含Worker类和MainWindow类
+主窗口GUI模块 - 支持多元化策略引擎
+包含关键词策略和白名单策略两种模式
 """
 
 import sys
@@ -15,7 +16,7 @@ import pandas as pd
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QFormLayout,
     QWidget, QTableWidget, QTableWidgetItem, QTabWidget, QSplitter,
-    QListWidget, QPushButton, QLineEdit, QRadioButton, QCheckBox,
+    QListWidget, QListWidgetItem, QPushButton, QLineEdit, QRadioButton, QCheckBox,
     QButtonGroup, QLabel, QMessageBox, QStackedWidget, QFileDialog,
     QComboBox, QSpinBox, QDoubleSpinBox, QGroupBox
 )
@@ -23,6 +24,7 @@ from PyQt6.QtCore import QObject, QThread, pyqtSignal, Qt
 from PyQt6.QtGui import QColor
 
 from core.engine import RuleEngine
+from core.database import DatabaseManager
 from core.platforms.haha_adapter import HahaAdapter
 from core.platforms.mahua_adapter import MahuaAdapter
 from core.audio import TTSPlayer
@@ -50,23 +52,20 @@ class Worker(QObject):
         engine = self.engine
 
         async def main_loop():
-            """主要的异步循环，从多个平台获取订单数据"""
-            logging.info("后台监控线程启动")
-
-            # 实例化多个平台适配器
-            adapters = [
-                HahaAdapter(HAHA_PLATFORM_NAME),
-                MahuaAdapter(MAHUA_PLATFORM_NAME)
-            ]
+            """主循环：持续监控订单并匹配规则"""
+            # 初始化平台适配器
+            haha_adapter = HahaAdapter(HAHA_PLATFORM_NAME)
+            mahua_adapter = MahuaAdapter(MAHUA_PLATFORM_NAME)
 
             while True:
                 try:
-                    # 发射状态更新信号 - 开始获取订单
-                    self.status_update.emit("正在获取多平台订单...")
+                    # 发送状态更新
+                    self.status_update.emit("正在获取订单数据...")
 
-                    # 并发执行所有平台的任务
+                    # 并发获取多个平台的数据
                     results = await asyncio.gather(
-                        *[adapter.fetch_and_process() for adapter in adapters],
+                        haha_adapter.fetch_and_process(),
+                        mahua_adapter.fetch_and_process(),
                         return_exceptions=True
                     )
 
@@ -75,162 +74,140 @@ class Worker(QObject):
                     total_new_orders = 0
 
                     for i, result in enumerate(results):
+                        platform_name = [HAHA_PLATFORM_NAME, MAHUA_PLATFORM_NAME][i]
+
                         if isinstance(result, Exception):
-                            logging.error(f"平台适配器执行出错: {result}")
+                            logging.error(f"{platform_name}平台获取数据失败: {result}")
                             continue
 
-                        if isinstance(result, dict):
-                            platform_name = result.get('name', '未知平台')
-                            success = result.get('success', False)
-                            orders = result.get('orders', [])
+                        # 调试日志：打印平台返回的完整结果结构
+                        logging.debug(f"🔍 {platform_name}平台返回结果: success={result.get('success')}, 字段={list(result.keys())}")
 
-                            if success:
-                                successful_platforms.append(platform_name)
-                                total_new_orders += len(orders)
-                                logging.info(f"{platform_name}平台获取成功，新增 {len(orders)} 条订单")
+                        if result['success']:
+                            successful_platforms.append(platform_name)
+                            new_orders = result.get('orders', [])  # 修复：使用正确的字段名 'orders'
+                            order_count = len(new_orders)
+                            total_new_orders += order_count
 
-                                # 遍历当前平台的订单并检查规则匹配
-                                for order in orders:
-                                    # 使用规则引擎检查订单
-                                    match_result = engine.check_order(order)
+                            # 调试日志：详细记录订单计数
+                            logging.debug(f"📊 {platform_name}平台: 获取到 {order_count} 条新订单，累计 {total_new_orders} 条")
+                            
+                            # 对每个新订单进行规则匹配
+                            for order in new_orders:
+                                match_result = engine.check_order(order)
+                                if match_result:
+                                    # 发现抢单机会
+                                    opportunity_data = {
+                                        'platform': platform_name,
+                                        'profit': match_result['total_profit'],
+                                        'seat_count': match_result['seat_count'],
+                                        'rule_name': match_result['rule_name'],
+                                        'order': match_result['order_details'],
+                                        'type': match_result.get('strategy_type', 'keyword')  # 添加策略类型
+                                    }
+                                    
+                                    # 发送信号到主窗口
+                                    self.new_opportunity.emit(opportunity_data)
+                                    
+                                    # 【移除Worker线程中的语音播报】
+                                    # 语音播报现在在MainWindow的on_new_opportunity方法中处理
+                                    # 这样可以确保语音播报在UI线程中执行，避免线程安全问题
 
-                                    # 如果匹配成功，发射信号
-                                    if match_result is not None:
-                                        # 创建包含平台信息的opportunity_data
-                                        opportunity_data = {
-                                            'platform': platform_name,  # 新增平台信息
-                                            'timestamp': order.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
-                                            'show_time': order.get('show_time', '未知'),
-                                            'total_profit': match_result['total_profit'],
-                                            'seat_count': match_result['seat_count'],
-                                            'rule_name': match_result['rule_name'],
-                                            'order_details': match_result['order_details']
-                                        }
-
-                                        logging.info(f"发现抢单机会: {match_result['rule_name']} - 总利润{match_result['total_profit']:.1f}元 ({match_result['seat_count']}张票)")
-
-                                        # 发射信号到主窗口
-                                        self.new_opportunity.emit(opportunity_data)
-                            else:
-                                logging.warning(f"{platform_name}平台获取失败")
-                        else:
-                            # 兼容旧版本HahaAdapter返回格式（直接返回订单列表）
-                            if isinstance(result, list):
-                                platform_name = HAHA_PLATFORM_NAME
-                                successful_platforms.append(platform_name)
-                                total_new_orders += len(result)
-                                logging.info(f"{platform_name}平台获取成功，新增 {len(result)} 条订单")
-
-                                # 遍历当前平台的订单并检查规则匹配
-                                for order in result:
-                                    # 使用规则引擎检查订单
-                                    match_result = engine.check_order(order)
-
-                                    # 如果匹配成功，发射信号
-                                    if match_result is not None:
-                                        # 创建包含平台信息的opportunity_data
-                                        opportunity_data = {
-                                            'platform': platform_name,  # 新增平台信息
-                                            'timestamp': order.get('timestamp', datetime.now().strftime('%Y-%m-%d %H:%M:%S')),
-                                            'show_time': order.get('show_time', '未知'),
-                                            'total_profit': match_result['total_profit'],
-                                            'seat_count': match_result['seat_count'],
-                                            'rule_name': match_result['rule_name'],
-                                            'order_details': match_result['order_details']
-                                        }
-
-                                        logging.info(f"发现抢单机会: {match_result['rule_name']} - 总利润{match_result['total_profit']:.1f}元 ({match_result['seat_count']}张票)")
-
-                                        # 发射信号到主窗口
-                                        self.new_opportunity.emit(opportunity_data)
-
-                    # 发射轮询周期完成信号
+                    # 发送轮询周期完成信号
                     self.cycle_finished.emit(successful_platforms, total_new_orders)
 
-                    # 控制API调用频率
+                    # 等待下一次轮询
                     await asyncio.sleep(API_REQUEST_INTERVAL)
 
                 except Exception as e:
-                    logging.error(f"后台处理出错: {e}")
-                    self.status_update.emit(f"处理出错: {e}，{API_REQUEST_INTERVAL}秒后重试...")
-                    await asyncio.sleep(API_REQUEST_INTERVAL)
+                    logging.error(f"主循环发生错误: {e}")
+                    self.status_update.emit(f"发生错误: {e}")
+                    await asyncio.sleep(5)  # 错误后短暂等待
 
-        # 启动异步循环
+        # 运行异步主循环
         asyncio.run(main_loop())
 
 
 class MainWindow(QMainWindow):
-    """主窗口类 - 智能抢单决策助手的GUI界面"""
+    """主窗口类 - 多元化策略引擎界面"""
 
     def __init__(self):
-        """初始化主窗口"""
+        """【中央仓储架构】初始化主窗口 - 响应式UI"""
         super().__init__()
 
-        # 设置窗口标题
-        self.setWindowTitle("智能抢单决策助手 v1.0")
-
-        # 设置窗口初始大小
-        self.resize(1200, 800)
-
-        # 创建Tab容器
-        self.tab_widget = QTabWidget()
-        self.setCentralWidget(self.tab_widget)
-
-        # 创建Tab页面
-        self.create_monitoring_tab()
-        self.create_editor_tab()
-
-        # 【v1.3 最终Bug修复】初始化数据库管理器（支持白名单策略删除）
-        from core.database import DatabaseManager
+        # 初始化数据库管理器
         self.db_manager = DatabaseManager()
 
-        # 创建规则引擎实例（传入数据库管理器）
-        self.engine = RuleEngine(RULES_FILE, self.db_manager)
+        # 【核心改进】初始化新的RuleEngine（状态广播系统）
+        self.engine = RuleEngine(db_manager=self.db_manager)
 
         # 初始化语音播放器
         self.tts_player = TTSPlayer()
 
-        # 连接信号与槽
+        # 当前编辑的规则
+        self.current_rule = None
+        self.current_strategy_type = None  # 'keywords' 或 'whitelist'
+
+        # 设置窗口属性
+        self.setWindowTitle("抢单提醒系统 - 中央仓储架构")
+        self.setGeometry(100, 100, 1400, 900)
+
+        # 创建UI
+        self.init_ui()
+
+        # 【核心改进】连接响应式信号与槽
         self.connect_signals()
 
-        # 加载规则到编辑器
-        self.load_rules_to_editor()
+        # 【修复】手动触发初始UI刷新
+        # 因为引擎在初始化时发射的信号此时UI还未准备好接收
+        self.refresh_policy_list_from_engine()
+        logging.info("手动触发初始UI刷新完成")
 
         # 启动后台工作线程
         self.init_worker_thread()
 
         # 记录应用程序启动
-        logging.info("应用程序启动，主窗口已创建")
+        logging.info("中央仓储架构启动完成")
+
+    def init_ui(self):
+        """初始化用户界面"""
+        # 创建中央窗口部件
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        # 创建Tab容器
+        self.tab_widget = QTabWidget()
+        central_widget_layout = QVBoxLayout()
+        central_widget_layout.addWidget(self.tab_widget)
+        central_widget.setLayout(central_widget_layout)
+
+        # 创建各个Tab页
+        self.create_monitoring_tab()
+        self.create_editor_tab()
+
+        # 创建状态栏
+        self.statusBar().showMessage("系统已启动，等待数据...")
 
     def create_monitoring_tab(self):
         """创建第一个Tab页：抢单监控"""
-        # 创建状态栏
-        self.statusBar().showMessage("系统准备就绪...")
-
         # 创建监控Tab容器
         self.monitoring_tab = QWidget()
 
-        # 创建表格
-        self.table = QTableWidget()
+        # 创建表格用于显示抢单机会
+        self.opportunities_table = QTableWidget()
+        self.opportunities_table.setColumnCount(7)
+        self.opportunities_table.setHorizontalHeaderLabels([
+            "平台", "利润", "票数", "规则名称", "城市", "影院", "影厅"
+        ])
 
-        # 设置表格表头
-        self.table.setColumnCount(8)
-        headers = ['平台', '触发时间', '利润', '影院名称', '影厅', '场次', '竞标价', '匹配规则']
-        self.table.setHorizontalHeaderLabels(headers)
+        # 设置表格属性
+        self.opportunities_table.setAlternatingRowColors(True)
+        self.opportunities_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
 
-        # 设置表格列宽
-        self.table.setColumnWidth(0, 60)   # 平台
-        self.table.setColumnWidth(1, 150)  # 触发时间
-        self.table.setColumnWidth(2, 80)   # 利润
-        self.table.setColumnWidth(3, 200)  # 影院名称
-        self.table.setColumnWidth(4, 100)  # 影厅
-        self.table.setColumnWidth(5, 120)  # 场次
-        self.table.setColumnWidth(6, 80)   # 竞标价
-        self.table.setColumnWidth(7, 180)  # 匹配规则
-
-        # 创建布局并添加表格
+        # 创建布局
         monitoring_layout = QVBoxLayout()
-        monitoring_layout.addWidget(self.table)
+        monitoring_layout.addWidget(QLabel("抢单机会监控:"))
+        monitoring_layout.addWidget(self.opportunities_table)
         self.monitoring_tab.setLayout(monitoring_layout)
 
         # 添加到Tab容器
@@ -244,20 +221,18 @@ class MainWindow(QMainWindow):
         # 创建主分割器（左右分割）
         main_splitter = QSplitter(Qt.Orientation.Horizontal)
 
-        # 创建左侧部分
-        left_widget = self.create_left_panel()
-
-        # 创建右侧部分
-        right_widget = self.create_right_panel()
+        # 创建左右面板
+        left_panel = self.create_left_panel()
+        right_panel = self.create_right_panel()
 
         # 添加到分割器
-        main_splitter.addWidget(left_widget)
-        main_splitter.addWidget(right_widget)
+        main_splitter.addWidget(left_panel)
+        main_splitter.addWidget(right_panel)
 
-        # 设置分割器比例（左侧30%，右侧70%）
-        main_splitter.setSizes([360, 840])
+        # 设置分割器比例
+        main_splitter.setSizes([300, 700])
 
-        # 设置编辑Tab布局
+        # 创建编辑Tab布局
         editor_layout = QVBoxLayout()
         editor_layout.addWidget(main_splitter)
         self.editor_tab.setLayout(editor_layout)
@@ -283,7 +258,7 @@ class MainWindow(QMainWindow):
         self.btn_save_rules = QPushButton("保存")
 
         # 设置按钮样式
-        for btn in [self.btn_add_keyword_rule, self.btn_add_whitelist_rule,
+        for btn in [self.btn_add_keyword_rule, self.btn_add_whitelist_rule, 
                    self.btn_delete_rule, self.btn_save_rules]:
             btn.setMinimumHeight(35)
 
@@ -292,13 +267,13 @@ class MainWindow(QMainWindow):
         strategy_layout.addWidget(self.btn_add_keyword_rule)
         strategy_layout.addWidget(self.btn_add_whitelist_rule)
         left_layout.addLayout(strategy_layout)
-
+        
         left_layout.addWidget(self.btn_delete_rule)
         left_layout.addWidget(self.btn_save_rules)
 
         # 连接按钮信号
-        self.btn_add_keyword_rule.clicked.connect(self.add_new_rule)  # 暂时使用原有方法
-        self.btn_add_whitelist_rule.clicked.connect(self.add_new_rule)  # 暂时使用原有方法
+        self.btn_add_keyword_rule.clicked.connect(self.add_keyword_rule)
+        self.btn_add_whitelist_rule.clicked.connect(self.add_whitelist_rule)
         self.btn_delete_rule.clicked.connect(self.delete_selected_rule)
         self.btn_save_rules.clicked.connect(self.save_current_rule)
 
@@ -306,31 +281,31 @@ class MainWindow(QMainWindow):
         return left_widget
 
     def create_right_panel(self):
-        """【v1.3 Bug修复】创建右侧面板 - 支持多策略类型编辑"""
+        """创建右侧面板"""
         right_widget = QWidget()
         main_layout = QVBoxLayout()
 
         # 用户引导标签
-        self.guide_label = QLabel("请从左侧选择规则进行编辑，或点击'新增规则'。")
+        self.guide_label = QLabel("请从左侧选择规则进行编辑，或点击策略按钮创建新规则。")
         self.guide_label.setStyleSheet("color: gray; font-style: italic; padding: 20px; text-align: center;")
         self.guide_label.setWordWrap(True)
         main_layout.addWidget(self.guide_label)
 
-        # 创建编辑器堆叠窗口部件
-        self.editor_stacked_widget = QStackedWidget()
+        # 创建堆叠窗口部件
+        self.stacked_widget = QStackedWidget()
 
-        # 创建关键词策略编辑卡片（索引0）
+        # 创建关键词策略编辑卡片
         self.keyword_card = self.create_keyword_strategy_card()
-        self.editor_stacked_widget.addWidget(self.keyword_card)
+        self.stacked_widget.addWidget(self.keyword_card)
 
-        # 创建白名单策略编辑卡片（索引1）
+        # 创建白名单策略编辑卡片
         self.whitelist_card = self.create_whitelist_strategy_card()
-        self.editor_stacked_widget.addWidget(self.whitelist_card)
+        self.stacked_widget.addWidget(self.whitelist_card)
 
-        main_layout.addWidget(self.editor_stacked_widget)
+        main_layout.addWidget(self.stacked_widget)
 
         # 默认隐藏堆叠窗口部件
-        self.editor_stacked_widget.hide()
+        self.stacked_widget.hide()
 
         right_widget.setLayout(main_layout)
         return right_widget
@@ -338,20 +313,20 @@ class MainWindow(QMainWindow):
     def create_keyword_strategy_card(self):
         """创建关键词策略编辑卡片"""
         card_widget = QWidget()
-        form_container_layout = QFormLayout()
+        form_layout = QFormLayout()
 
         # 规则名称
         self.edit_rule_name = QLineEdit()
-        form_container_layout.addRow("规则名称:", self.edit_rule_name)
+        form_layout.addRow("规则名称:", self.edit_rule_name)
 
         # 城市
         self.edit_city = QLineEdit()
-        form_container_layout.addRow("城市:", self.edit_city)
+        form_layout.addRow("城市:", self.edit_city)
 
         # 影院关键词
         self.edit_cinema_keywords = QLineEdit()
         self.edit_cinema_keywords.setPlaceholderText("多个关键词用逗号分隔，如：万达,CBD")
-        form_container_layout.addRow("影院关键词:", self.edit_cinema_keywords)
+        form_layout.addRow("影院关键词:", self.edit_cinema_keywords)
 
         # 影厅逻辑模式
         hall_mode_widget = QWidget()
@@ -376,499 +351,894 @@ class MainWindow(QMainWindow):
         hall_mode_layout.addStretch()
 
         hall_mode_widget.setLayout(hall_mode_layout)
-        form_container_layout.addRow("影厅逻辑模式:", hall_mode_widget)
+        form_layout.addRow("影厅逻辑模式:", hall_mode_widget)
 
         # 影厅列表
         self.edit_hall_list = QLineEdit()
         self.edit_hall_list.setPlaceholderText("多个影厅用逗号分隔，如：IMAX,激光IMAX")
-        form_container_layout.addRow("影厅列表:", self.edit_hall_list)
+        form_layout.addRow("影厅列表:", self.edit_hall_list)
 
         # 成本价
         self.edit_cost = QLineEdit()
         self.edit_cost.setPlaceholderText("例如：50.0")
-        form_container_layout.addRow("成本价:", self.edit_cost)
+        form_layout.addRow("成本价:", self.edit_cost)
 
         # 最低利润
         self.edit_min_profit = QLineEdit()
         self.edit_min_profit.setPlaceholderText("例如：8.0")
-        form_container_layout.addRow("最低利润:", self.edit_min_profit)
+        form_layout.addRow("最低利润:", self.edit_min_profit)
 
-        # 启用此规则
-        self.checkbox_enabled = QCheckBox("启用此规则")
-        self.checkbox_enabled.setChecked(True)
-        form_container_layout.addRow("", self.checkbox_enabled)
+        # 【安全机制】启用此规则 - 默认不启用
+        self.checkbox_enabled = QCheckBox("启用此策略")
+        self.checkbox_enabled.setChecked(False)
+        form_layout.addRow("", self.checkbox_enabled)
 
-        # 设置卡片布局
-        card_widget.setLayout(form_container_layout)
+        card_widget.setLayout(form_layout)
         return card_widget
 
     def create_whitelist_strategy_card(self):
         """创建白名单策略编辑卡片"""
         card_widget = QWidget()
-        form_container_layout = QFormLayout()
+        form_layout = QFormLayout()
 
-        # 白名单策略的表单字段
+        # 规则名称
         self.edit_whitelist_rule_name = QLineEdit()
-        form_container_layout.addRow("规则名称:", self.edit_whitelist_rule_name)
+        form_layout.addRow("规则名称:", self.edit_whitelist_rule_name)
 
+        # 城市（可选）
         self.edit_whitelist_city = QLineEdit()
-        form_container_layout.addRow("城市（可选）:", self.edit_whitelist_city)
+        self.edit_whitelist_city.setPlaceholderText("留空表示不限制城市")
+        form_layout.addRow("城市（可选）:", self.edit_whitelist_city)
 
-        # 白名单管理
-        whitelist_label = QLabel("白名单管理：请使用新版UI导入Excel文件")
-        whitelist_label.setStyleSheet("color: blue; font-weight: bold;")
-        form_container_layout.addRow("", whitelist_label)
+        # 白名单管理组
+        whitelist_group = QGroupBox("影院白名单")
+        whitelist_layout = QVBoxLayout()
 
-        # 启用此规则
-        self.checkbox_whitelist_enabled = QCheckBox("启用此规则")
-        self.checkbox_whitelist_enabled.setChecked(True)
-        form_container_layout.addRow("", self.checkbox_whitelist_enabled)
+        # 导入Excel按钮
+        self.btn_import_excel = QPushButton("导入Excel名单")
+        self.btn_import_excel.clicked.connect(self.import_excel_whitelist)
+        whitelist_layout.addWidget(self.btn_import_excel)
 
-        # 设置卡片布局
-        card_widget.setLayout(form_container_layout)
+        # 影院数量显示
+        self.label_cinema_count = QLabel("已从数据库加载 0 个影院")
+        self.label_cinema_count.setStyleSheet("color: blue; font-weight: bold;")
+        whitelist_layout.addWidget(self.label_cinema_count)
+
+        whitelist_group.setLayout(whitelist_layout)
+        form_layout.addRow("", whitelist_group)
+
+        # 高级筛选规则组
+        filter_group = QGroupBox("高级筛选规则")
+        filter_layout = QFormLayout()
+
+        # 【人性化升级】票数筛选模板
+        ticket_widget = QWidget()
+        ticket_layout = QHBoxLayout()
+
+        self.checkbox_ticket_1 = QCheckBox("1张")
+        self.checkbox_ticket_2 = QCheckBox("2张")
+        self.checkbox_ticket_3 = QCheckBox("3张")
+        self.checkbox_ticket_4 = QCheckBox("4张")
+        self.checkbox_ticket_5_plus = QCheckBox("5张及以上")
+
+        # 【安全机制】默认不启用任何票数筛选，用户需要主动选择
+        self.ticket_checkboxes = [
+            self.checkbox_ticket_1, self.checkbox_ticket_2,
+            self.checkbox_ticket_3, self.checkbox_ticket_4,
+            self.checkbox_ticket_5_plus
+        ]
+
+        for checkbox in self.ticket_checkboxes:
+            checkbox.setChecked(False)  # 默认不启用
+            ticket_layout.addWidget(checkbox)
+
+        ticket_layout.addStretch()
+        ticket_widget.setLayout(ticket_layout)
+        filter_layout.addRow("票数筛选:", ticket_widget)
+
+        # 原价范围
+        price_widget = QWidget()
+        price_layout = QHBoxLayout()
+
+        self.spin_min_price = QDoubleSpinBox()
+        self.spin_min_price.setRange(0, 999)
+        self.spin_min_price.setValue(0)
+        self.spin_min_price.setSuffix(" 元")
+
+        price_layout.addWidget(QLabel("最低:"))
+        price_layout.addWidget(self.spin_min_price)
+
+        self.spin_max_price = QDoubleSpinBox()
+        self.spin_max_price.setRange(0, 999)
+        self.spin_max_price.setValue(200)
+        self.spin_max_price.setSuffix(" 元")
+
+        price_layout.addWidget(QLabel("最高:"))
+        price_layout.addWidget(self.spin_max_price)
+        price_layout.addStretch()
+
+        price_widget.setLayout(price_layout)
+        filter_layout.addRow("原价范围:", price_widget)
+
+        # 【净化】移除成本价和最低利润字段，白名单策略不需要这些字段
+
+        # 最低竞标价
+        self.edit_whitelist_min_bid = QDoubleSpinBox()
+        self.edit_whitelist_min_bid.setRange(0, 999)
+        self.edit_whitelist_min_bid.setValue(0)
+        self.edit_whitelist_min_bid.setSuffix(" 元")
+        filter_layout.addRow("最低竞标价:", self.edit_whitelist_min_bid)
+
+        filter_group.setLayout(filter_layout)
+        form_layout.addRow("", filter_group)
+
+        # 【安全机制】启用此规则 - 默认不启用
+        self.checkbox_whitelist_enabled = QCheckBox("启用此策略")
+        self.checkbox_whitelist_enabled.setChecked(False)
+        form_layout.addRow("", self.checkbox_whitelist_enabled)
+
+        card_widget.setLayout(form_layout)
         return card_widget
 
-    def add_new_rule(self):
-        """【v1.3 Bug修复】添加新规则 - 默认使用关键词策略"""
+    def add_keyword_rule(self):
+        """【中央仓储架构】添加关键词策略 - 简化版本"""
         try:
-            # 隐藏引导标签，显示编辑器
-            self.guide_label.hide()
-            self.editor_stacked_widget.show()
+            # 【简化】现在只需创建包含新ID的策略字典，然后调用引擎方法
+            import uuid
 
-            # 默认切换到关键词策略卡片（索引0）
-            self.editor_stacked_widget.setCurrentIndex(0)
+            new_policy = {
+                'rule_id': str(uuid.uuid4()),
+                'rule_name': '新关键词策略',
+                'enabled': False,  # 【安全机制】默认不启用
+                'match_conditions': {
+                    'match_mode': 'keywords',
+                    'city': '',
+                    'cinema_keywords': []
+                },
+                'hall_logic': {
+                    'mode': 'ALL',
+                    'hall_list': [],
+                    'cost': 30.0
+                },
+                'profit_logic': {
+                    'min_profit_threshold': 10.0
+                },
+                'filter_logic': {
+                    'ticket_counts': [],  # 【安全机制】默认不选择任何票数
+                    'price_range': {'min': 0, 'max': 200},
+                    'min_bid_price': 0
+                }
+            }
 
-            # 清空关键词策略表单，准备输入新规则
-            self.edit_rule_name.clear()
-            self.edit_city.clear()
-            self.edit_cinema_keywords.clear()
-            self.edit_hall_list.clear()
-            self.edit_cost.clear()
-            self.edit_min_profit.clear()
+            # 【核心简化】调用引擎方法，引擎会自动发射信号刷新UI
+            success = self.engine.add_new_policy(new_policy)
 
-            # 设置默认值
-            self.radio_include.setChecked(True)
-            self.checkbox_enabled.setChecked(True)
+            if success:
+                # 设置当前编辑状态
+                self.current_strategy_type = 'keywords'
+                self.current_rule = new_policy
 
-            # 清除列表选择，确保currentItem为None
-            self.rule_list.clearSelection()
-            self.rule_list.setCurrentItem(None)
+                # 显示编辑界面
+                self.guide_label.hide()
+                self.stacked_widget.show()
+                self.stacked_widget.setCurrentWidget(self.keyword_card)
 
-            logging.debug("已清空表单，准备输入新规则")
-            self.statusBar().showMessage("请填写新规则信息，然后点击'保存'")
+                # 加载策略到表单
+                self.load_keyword_rule(new_policy)
+
+                logging.info("成功添加新的关键词策略")
+                self.statusBar().showMessage("新关键词策略已创建")
+            else:
+                QMessageBox.critical(self, "错误", "添加关键词策略失败")
 
         except Exception as e:
-            logging.error(f"添加新规则时出错: {e}")
+            logging.error(f"添加关键词策略失败: {e}")
+            QMessageBox.critical(self, "错误", f"添加关键词策略失败: {e}")
+
+    def add_whitelist_rule(self):
+        """【中央仓储架构】添加白名单策略 - 简化版本"""
+        try:
+            # 【简化】现在只需创建包含新ID的策略字典，然后调用引擎方法
+            import uuid
+
+            new_policy = {
+                'rule_id': str(uuid.uuid4()),
+                'rule_name': '新白名单策略',
+                'enabled': False,  # 【安全机制】默认不启用
+                'match_conditions': {
+                    'match_mode': 'whitelist',
+                    'city': ''
+                },
+                # 【净化】白名单策略不需要hall_logic和profit_logic
+                'filter_logic': {
+                    'ticket_counts': [],  # 【安全机制】默认不选择任何票数
+                    'price_range': {'min': 0, 'max': 200},
+                    'min_bid_price': 0
+                }
+            }
+
+            # 【核心简化】调用引擎方法，引擎会自动发射信号刷新UI
+            success = self.engine.add_new_policy(new_policy)
+
+            if success:
+                # 设置当前编辑状态
+                self.current_strategy_type = 'whitelist'
+                self.current_rule = new_policy
+                self.current_policy_id = new_policy['rule_id']  # 白名单策略需要这个ID
+
+                # 显示编辑界面
+                self.guide_label.hide()
+                self.stacked_widget.show()
+                self.stacked_widget.setCurrentWidget(self.whitelist_card)
+
+                # 加载策略到表单
+                self.load_whitelist_rule(new_policy)
+
+                logging.info("成功添加新的白名单策略")
+                self.statusBar().showMessage("新白名单策略已创建，请导入影院名单")
+            else:
+                QMessageBox.critical(self, "错误", "添加白名单策略失败")
+
+        except Exception as e:
+            logging.error(f"添加白名单策略失败: {e}")
+            QMessageBox.critical(self, "错误", f"添加白名单策略失败: {e}")
+
+    def clear_keyword_form(self):
+        """清空关键词策略表单"""
+        self.edit_rule_name.clear()
+        self.edit_city.clear()
+        self.edit_cinema_keywords.clear()
+        self.edit_hall_list.clear()
+        self.edit_cost.clear()
+        self.edit_min_profit.clear()
+        self.radio_include.setChecked(True)
+        self.checkbox_enabled.setChecked(False)  # 【安全机制】默认不启用
+
+    def clear_whitelist_form(self):
+        """【净化】清空白名单策略表单 - 移除成本和利润字段"""
+        self.edit_whitelist_rule_name.clear()
+        self.edit_whitelist_city.clear()
+        # 【净化】移除成本价和最低利润的清空操作
+        self.edit_whitelist_min_bid.setValue(0)
+        self.spin_min_price.setValue(0)
+        self.spin_max_price.setValue(200)
+
+        # 【安全机制】重置票数选择 - 默认不启用
+        for checkbox in self.ticket_checkboxes:
+            checkbox.setChecked(False)
+
+        self.checkbox_whitelist_enabled.setChecked(False)  # 【安全机制】默认不启用
+        self.label_cinema_count.setText("已从数据库加载 0 个影院")
+
+    def import_excel_whitelist(self):
+        """导入Excel白名单 - v1.3 Bug修复版本"""
+        try:
+            # 打开文件选择对话框
+            file_path, _ = QFileDialog.getOpenFileName(
+                self,
+                "选择Excel文件",
+                "",
+                "Excel文件 (*.xlsx *.xls);;CSV文件 (*.csv);;所有文件 (*)"
+            )
+
+            if not file_path:
+                return
+
+            # 使用新的健壮文件解析方法
+            cinema_names = self.load_cinemas_from_file(file_path)
+
+            if not cinema_names:
+                # 错误信息已在load_cinemas_from_file中处理
+                return
+
+            # 生成临时策略ID（如果是新策略）
+            if not self.current_rule:
+                policy_id = str(uuid.uuid4())
+            else:
+                policy_id = self.current_rule.get('rule_id', str(uuid.uuid4()))
+
+            # 导入到数据库
+            success = self.engine.import_whitelist_cinemas(policy_id, cinema_names)
+
+            if success:
+                # 更新显示
+                count = len(cinema_names)
+                self.label_cinema_count.setText(f"已从数据库加载 {count} 个影院")
+
+                # 保存策略ID以便后续保存
+                self.current_policy_id = policy_id
+
+                QMessageBox.information(self, "成功", f"成功导入 {count} 个影院到白名单")
+                logging.info(f"成功导入 {count} 个影院到白名单策略 {policy_id}")
+                self.statusBar().showMessage(f"成功导入 {count} 个影院")
+            else:
+                QMessageBox.warning(self, "错误", "导入影院数据失败")
+
+        except Exception as e:
+            logging.error(f"导入Excel白名单失败: {e}")
+            QMessageBox.warning(self, "错误", f"导入失败: {e}")
+
+    def load_cinemas_from_file(self, file_path: str) -> set:
+        """
+        【v1.3 Bug修复】从文件加载影院名单的健壮方法
+
+        Args:
+            file_path (str): 文件路径
+
+        Returns:
+            set: 影院名称集合，失败时返回空集合
+        """
+        try:
+            # 根据文件扩展名选择读取方法
+            if file_path.lower().endswith('.csv'):
+                df = pd.read_csv(file_path, encoding='utf-8')
+            else:
+                # Excel文件
+                df = pd.read_excel(file_path)
+
+            logging.info(f"成功读取文件: {file_path}")
+            logging.info(f"文件包含 {len(df)} 行数据，列名: {list(df.columns)}")
+
+        except Exception as e:
+            error_msg = f"读取文件失败: {e}"
+            logging.error(error_msg)
+            QMessageBox.warning(self, "错误", error_msg)
+            return set()
+
+        # 检查文件是否为空
+        if df.empty:
+            error_msg = "文件为空，没有数据"
+            logging.error(error_msg)
+            QMessageBox.warning(self, "错误", error_msg)
+            return set()
+
+        # 【核心修复】检查是否存在"影院名称"列
+        target_column = "影院名称"
+        if target_column not in df.columns:
+            error_msg = f"关键列'{target_column}'未在文件中找到！"
+            logging.error(error_msg)
+            logging.error(f"文件中的列名: {list(df.columns)}")
+            QMessageBox.warning(self, "错误", f"未找到'{target_column}'列\n\n文件中的列名: {list(df.columns)}\n\n请确保Excel文件包含名为'{target_column}'的列")
+            return set()
+
+        # 使用指定列名提取数据
+        try:
+            cinema_names_list = df[target_column].dropna().astype(str).tolist()
+            logging.info(f"从'{target_column}'列提取到 {len(cinema_names_list)} 条原始数据")
+
+        except Exception as e:
+            error_msg = f"提取'{target_column}'列数据失败: {e}"
+            logging.error(error_msg)
+            QMessageBox.warning(self, "错误", error_msg)
+            return set()
+
+        # 清理和去重数据
+        cinema_names = set()
+        for name in cinema_names_list:
+            cleaned_name = str(name).strip()
+            if cleaned_name and cleaned_name != 'nan':  # 排除空值和NaN
+                cinema_names.add(cleaned_name)
+
+        if not cinema_names:
+            error_msg = f"'{target_column}'列中未找到有效的影院名称"
+            logging.error(error_msg)
+            QMessageBox.warning(self, "错误", error_msg)
+            return set()
+
+        # 【验证日志】打印前5个成功提取的影院名称
+        sample_names = list(cinema_names)[:5]
+        logging.info(f"✅ 成功从文件中提取到 {len(cinema_names)} 个有效影院名称")
+        logging.info(f"📋 前5个影院名称示例: {sample_names}")
+
+        return cinema_names
 
     def delete_selected_rule(self):
-        """【v1.3 最终Bug修复】彻底重写删除逻辑 - 基于行号索引的精确删除"""
+        """
+        【v1.3 最终修正版】删除选中的规则 - 使用行号索引直接删除，根治前缀匹配问题
+        """
         try:
             # 1. 获取当前在QListWidget中被选中的行号索引
             current_row = self.rule_list.currentRow()
 
-            # 2. 检查current_row是否有效（是否为-1）
+            # 2. 检查索引是否有效（用户是否真的选中了一项）
             if current_row == -1:
                 self.statusBar().showMessage("请先在左侧列表中选择要删除的规则")
                 return
 
-            # 验证索引范围，确保不会越界
+            # 3. 从内存中获取规则对象，用于弹窗确认时显示名字
             if not (0 <= current_row < len(self.engine.rules)):
-                self.statusBar().showMessage("选择的规则索引无效，请重新选择")
-                logging.error(f"删除规则时索引无效: {current_row}, 规则总数: {len(self.engine.rules)}")
+                logging.error(f"尝试删除一个无效的UI索引: {current_row}")
+                self.statusBar().showMessage("删除失败：内部索引错误，请重启应用")
                 return
-
-            # 3. 从self.engine.rules列表中，使用current_row作为索引，获取将要被删除的规则对象
+            
             rule_to_delete = self.engine.rules[current_row]
-            rule_name = rule_to_delete.get('rule_name', f"规则{current_row + 1}")
+            # 动态生成带前缀的显示名称，用于弹窗
+            match_mode = rule_to_delete.get('match_conditions', {}).get('match_mode', 'keyword')
+            prefix = "[白名单]" if match_mode == 'whitelist' else "[关键词]"
+            rule_name_for_display = f"{prefix} {rule_to_delete.get('rule_name', '')}"
 
-            # 获取规则类型，用于后续数据库清理
-            match_conditions = rule_to_delete.get('match_conditions', {})
-            match_mode = match_conditions.get('match_mode', 'keywords')
-
-            # 4. 弹出QMessageBox进行二次确认，防止用户误删
+            # 4. 弹出二次确认对话框
             reply = QMessageBox.question(
-                self,
-                "确认删除",
-                f"您确定要删除规则 '{rule_name}' 吗？此操作无法撤销。",
+                self, "确认删除",
+                f"您确定要删除规则 '{rule_name_for_display}' 吗？\n此操作无法撤销。",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No
             )
 
-            # 如果用户取消删除，直接返回
+            # 5. 如果用户点击“No”，则不执行任何操作
             if reply != QMessageBox.StandardButton.Yes:
                 return
 
-            # 5. 直接使用del self.engine.rules[current_row]从内存中精确地删除该规则对象
-            del self.engine.rules[current_row]
+            # 6. 【中央仓储架构】现在只需获取policy_id和index，然后调用引擎方法
+            policy_id = rule_to_delete.get('rule_id')
 
-            # 6. 如果被删除的规则是白名单类型，则调用数据库管理器清理其在数据库中的关联影院
-            if match_mode == 'whitelist':
-                policy_id = rule_to_delete.get('rule_id')
-                if policy_id:
-                    deleted_count = self.db_manager.clear_cinemas_for_policy(policy_id)
-                    logging.info(f"已从数据库中删除策略ID为 {policy_id} 的 {deleted_count} 个白名单影院")
+            # 【必须删除所有手动操作self.rule_list的代码】
+            success = self.engine.delete_policy(policy_id, current_row)
 
-            # 7. 调用self.engine.save_rules()将最新的规则列表持久化保存
-            success = self.engine.save_rules(self.engine.rules)
-            if not success:
-                logging.error("保存规则到文件失败")
-                self.statusBar().showMessage("删除成功但保存失败，请检查文件权限")
-                return
+            if success:
+                # 7. 清除当前编辑状态
+                self.current_rule = None
+                self.current_strategy_type = None
 
-            # 8. 【关键】调用self.load_rules_to_editor()方法，以"推倒重建"的方式，完整地刷新左侧的UI列表
-            self.load_rules_to_editor()
+                # 8. 显示引导界面
+                self.guide_label.show()
+                self.stacked_widget.hide()
 
-            # 9. 将右侧的编辑区恢复到初始的引导界面状态
-            self.guide_label.show()
-            self.editor_stacked_widget.hide()
-
-            # 成功提示
-            logging.info(f"规则 '{rule_name}' 已被成功删除（原索引: {current_row}）")
-            self.statusBar().showMessage(f"规则 '{rule_name}' 已删除")
+                # 9. 成功提示
+                logging.info(f"策略 '{rule_name_for_display}' 删除成功")
+                self.statusBar().showMessage(f"策略 '{rule_name_for_display}' 已删除")
+            else:
+                QMessageBox.critical(self, "删除失败", "删除策略时发生错误，请查看日志")
 
         except Exception as e:
-            logging.error(f"删除规则时出错: {e}", exc_info=True)
-            self.statusBar().showMessage("删除规则失败，请查看日志")
-
+            logging.error(f"删除规则时发生未知错误: {e}", exc_info=True)
+            self.statusBar().showMessage("删除规则失败，请查看日志。")
     def save_current_rule(self):
-        """应用并保存当前修改"""
+        """【中央仓储架构】保存当前规则 - 简化版本"""
         try:
-            # a. 数据获取与校验
-            rule_name = self.edit_rule_name.text().strip()
-            city = self.edit_city.text().strip()
-            cinema_keywords_text = self.edit_cinema_keywords.text().strip()
-            hall_list_text = self.edit_hall_list.text().strip()
-            cost_text = self.edit_cost.text().strip()
-            min_profit_text = self.edit_min_profit.text().strip()
-
-            # 严格的输入校验
-            if not rule_name:
-                QMessageBox.warning(self, "输入错误", "规则名称不能为空！")
+            if self.current_strategy_type == 'keywords':
+                updated_policy = self.get_keyword_rule_data()
+            elif self.current_strategy_type == 'whitelist':
+                updated_policy = self.get_whitelist_rule_data()
+            else:
+                QMessageBox.warning(self, "错误", "请先选择策略类型")
                 return
 
-            # 验证数字字段
-            try:
-                cost = float(cost_text) if cost_text else 0.0
-                min_profit = float(min_profit_text) if min_profit_text else 0.0
-            except ValueError:
-                QMessageBox.warning(self, "输入错误", "成本价和最低利润必须是有效的数字！")
-                return
+            # 【核心简化】现在只需调用引擎的save_policy_changes方法
+            success = self.engine.save_policy_changes(updated_policy)
 
-            # 处理关键词列表
-            cinema_keywords = [kw.strip() for kw in cinema_keywords_text.split(',') if kw.strip()]
+            if success:
+                # 更新当前规则引用
+                self.current_rule = updated_policy
+                self.statusBar().showMessage("保存成功！")
+                logging.info(f"策略 '{updated_policy.get('rule_name')}' 保存成功")
+            else:
+                QMessageBox.warning(self, "错误", "保存策略失败")
 
-            # 处理影厅列表
+        except Exception as e:
+            logging.error(f"保存规则失败: {e}")
+            QMessageBox.warning(self, "错误", f"保存规则失败: {e}")
+
+    def get_keyword_rule_data(self):
+        """【中央仓储架构】获取关键词策略数据 - 纯数据获取方法"""
+        # 数据获取与校验
+        rule_name = self.edit_rule_name.text().strip()
+        city = self.edit_city.text().strip()
+        cinema_keywords_text = self.edit_cinema_keywords.text().strip()
+        hall_list_text = self.edit_hall_list.text().strip()
+        cost_text = self.edit_cost.text().strip()
+        min_profit_text = self.edit_min_profit.text().strip()
+
+        # 基本校验
+        if not rule_name:
+            raise ValueError("规则名称不能为空")
+
+        if not cinema_keywords_text:
+            raise ValueError("影院关键词不能为空")
+
+        # 解析影院关键词
+        cinema_keywords = [kw.strip() for kw in cinema_keywords_text.split(',') if kw.strip()]
+        if not cinema_keywords:
+            raise ValueError("请输入有效的影院关键词")
+
+        # 解析影厅列表
+        hall_list = []
+        if hall_list_text:
             hall_list = [hall.strip() for hall in hall_list_text.split(',') if hall.strip()]
 
-            # 获取影厅模式
-            if self.radio_all.isChecked():
-                hall_mode = 'ALL'
-            elif self.radio_include.isChecked():
-                hall_mode = 'INCLUDE'
-            else:
-                hall_mode = 'EXCLUDE'
-
-            # b. 新增/更新逻辑判断
-            current_item = self.rule_list.currentItem()
-
-            if current_item:
-                # 更新模式
-                old_rule_name = current_item.text()
-
-                # 如果规则名称发生变化，需要检查新名称是否已存在
-                if rule_name != old_rule_name:
-                    for rule in self.engine.rules:
-                        if rule.get('rule_name') == rule_name:
-                            QMessageBox.warning(self, "规则名称冲突", f"规则名称 '{rule_name}' 已存在，请使用其他名称！")
-                            return
-
-                # 找到并更新规则
-                for i, rule in enumerate(self.engine.rules):
-                    if rule.get('rule_name') == old_rule_name:
-                        # 构建更新后的规则
-                        updated_rule = {
-                            'rule_id': rule.get('rule_id', str(uuid.uuid4())),
-                            'rule_name': rule_name,
-                            'enabled': self.checkbox_enabled.isChecked(),
-                            'match_conditions': {
-                                'city': city,
-                                'cinema_keywords': cinema_keywords
-                            },
-                            'hall_logic': {
-                                'mode': hall_mode,
-                                'hall_list': hall_list,
-                                'cost': cost
-                            },
-                            'profit_logic': {
-                                'min_profit_threshold': min_profit
-                            }
-                        }
-                        self.engine.rules[i] = updated_rule
-                        break
-
-                logging.debug(f"已更新规则: {rule_name}")
-
-            else:
-                # 新增模式
-                # 执行规则名唯一性校验
-                for rule in self.engine.rules:
-                    if rule.get('rule_name') == rule_name:
-                        QMessageBox.warning(self, "规则名称冲突", f"规则名称 '{rule_name}' 已存在，请使用其他名称！")
-                        return
-
-                # 创建新规则
-                new_rule = {
-                    'rule_id': str(uuid.uuid4()),
-                    'rule_name': rule_name,
-                    'enabled': self.checkbox_enabled.isChecked(),
-                    'match_conditions': {
-                        'city': city,
-                        'cinema_keywords': cinema_keywords
-                    },
-                    'hall_logic': {
-                        'mode': hall_mode,
-                        'hall_list': hall_list,
-                        'cost': cost
-                    },
-                    'profit_logic': {
-                        'min_profit_threshold': min_profit
-                    }
-                }
-
-                self.engine.rules.append(new_rule)
-                logging.debug(f"已新增规则: {rule_name}")
-
-            # 重新处理hall_set（为规则引擎预处理）
-            for rule in self.engine.rules:
-                if 'hall_logic' in rule and 'hall_list' in rule['hall_logic']:
-                    hall_list = rule['hall_logic']['hall_list']
-                    rule['hall_logic']['hall_set'] = set(hall_list)
-
-            # c. 写入与刷新
-            self.save_rules_to_file()
-            self.load_rules_to_editor()
-
-            # 在状态栏给出成功提示
-            self.statusBar().showMessage("保存成功！")
-
-            # 记录保存成功
-            logging.info(f"规则 '{rule_name}' 已成功保存")
-
-        except Exception as e:
-            logging.error(f"保存规则时出错: {e}")
-            QMessageBox.warning(self, "保存失败", f"保存规则时发生错误：{str(e)}")
-            self.statusBar().showMessage("保存失败")
-
-    def save_rules_to_file(self):
-        """将规则保存到文件"""
+        # 解析数值
         try:
-            # 准备保存的数据（移除hall_set，因为它是运行时生成的）
-            rules_to_save = []
-            for rule in self.engine.rules:
-                rule_copy = rule.copy()
-                if 'hall_logic' in rule_copy and 'hall_set' in rule_copy['hall_logic']:
-                    hall_logic_copy = rule_copy['hall_logic'].copy()
-                    del hall_logic_copy['hall_set']
-                    rule_copy['hall_logic'] = hall_logic_copy
-                rules_to_save.append(rule_copy)
+            cost = float(cost_text) if cost_text else 0.0
+            min_profit = float(min_profit_text) if min_profit_text else 0.0
+        except ValueError:
+            raise ValueError("成本价和最低利润必须是有效数字")
 
-            # 写入文件
-            with open(RULES_FILE, 'w', encoding='utf-8') as f:
-                json.dump(rules_to_save, f, ensure_ascii=False, indent=2)
+        # 获取影厅逻辑模式
+        if self.radio_all.isChecked():
+            hall_mode = "ALL"
+        elif self.radio_include.isChecked():
+            hall_mode = "INCLUDE"
+        else:
+            hall_mode = "EXCLUDE"
 
-            logging.debug("规则已保存到文件")
+        # 【人性化升级】获取票数选择 - 新的5个模板
+        ticket_counts = []
+        if hasattr(self, 'checkbox_ticket_1') and self.checkbox_ticket_1.isChecked():
+            ticket_counts.append(1)
+        if hasattr(self, 'checkbox_ticket_2') and self.checkbox_ticket_2.isChecked():
+            ticket_counts.append(2)
+        if hasattr(self, 'checkbox_ticket_3') and self.checkbox_ticket_3.isChecked():
+            ticket_counts.append(3)
+        if hasattr(self, 'checkbox_ticket_4') and self.checkbox_ticket_4.isChecked():
+            ticket_counts.append(4)
+        if hasattr(self, 'checkbox_ticket_5_plus') and self.checkbox_ticket_5_plus.isChecked():
+            ticket_counts.extend(list(range(5, 21)))  # 5张及以上：5到20张
 
-        except Exception as e:
-            logging.error(f"保存规则到文件时出错: {e}")
-            raise
+        # 构建策略数据
+        rule_id = self.current_rule.get('rule_id') if self.current_rule else str(uuid.uuid4())
+
+        policy_data = {
+            'rule_id': rule_id,
+            'rule_name': rule_name,
+            'enabled': self.checkbox_enabled.isChecked(),
+            'match_conditions': {
+                'match_mode': 'keywords',
+                'city': city,
+                'cinema_keywords': cinema_keywords
+            },
+            'hall_logic': {
+                'mode': hall_mode,
+                'hall_list': hall_list,
+                'cost': cost
+            },
+            'profit_logic': {
+                'min_profit_threshold': min_profit
+            },
+            'filter_logic': {
+                'ticket_counts': ticket_counts,
+                'price_range': {
+                    'min': getattr(self, 'spin_min_price', None).value() if hasattr(self, 'spin_min_price') else 0,
+                    'max': getattr(self, 'spin_max_price', None).value() if hasattr(self, 'spin_max_price') else 200
+                },
+                'min_bid_price': getattr(self, 'edit_min_bid', None).value() if hasattr(self, 'edit_min_bid') else 0
+            }
+        }
+
+        return policy_data
+
+    def get_whitelist_rule_data(self):
+        """【中央仓储架构】获取白名单策略数据 - 纯数据获取方法"""
+        # 数据获取与校验
+        rule_name = self.edit_whitelist_rule_name.text().strip()
+        city = self.edit_whitelist_city.text().strip()
+
+        # 基本校验
+        if not rule_name:
+            raise ValueError("规则名称不能为空")
+
+        # 检查是否已导入影院数据
+        if not hasattr(self, 'current_policy_id'):
+            raise ValueError("请先导入影院白名单")
+
+        # 构建策略数据
+        rule_id = self.current_rule.get('rule_id') if self.current_rule else self.current_policy_id
+
+        # 【净化】白名单策略数据结构 - 移除成本和利润字段
+        policy_data = {
+            'rule_id': rule_id,
+            'rule_name': rule_name,
+            'enabled': self.checkbox_whitelist_enabled.isChecked(),
+            'match_conditions': {
+                'match_mode': 'whitelist',
+                'city': city
+            },
+            # 【净化】白名单策略不需要hall_logic和profit_logic
+            'filter_logic': {
+                'ticket_counts': self.get_selected_ticket_counts(),
+                'price_range': {
+                    'min': self.spin_min_price.value(),
+                    'max': self.spin_max_price.value()
+                },
+                'min_bid_price': self.edit_whitelist_min_bid.value()
+            }
+        }
+
+        return policy_data
+
+    def get_selected_ticket_counts(self):
+        """【人性化升级】获取选中的票数 - 新的5个模板"""
+        selected = []
+        if self.checkbox_ticket_1.isChecked():
+            selected.append(1)
+        if self.checkbox_ticket_2.isChecked():
+            selected.append(2)
+        if self.checkbox_ticket_3.isChecked():
+            selected.append(3)
+        if self.checkbox_ticket_4.isChecked():
+            selected.append(4)
+        if self.checkbox_ticket_5_plus.isChecked():
+            selected.extend(list(range(5, 21)))  # 5张及以上：5到20张
+        return selected
+
+    # 【中央仓储架构】旧的save_rules_to_file方法已被删除
+    # 现在数据直接保存到数据库，不再需要文件操作
+
+    # 【中央仓储架构】旧的load_rules_to_editor方法已被删除
+    # 现在UI刷新由refresh_policy_list_from_engine响应式方法处理
 
     def connect_signals(self):
-        """连接信号与槽"""
-        # 【v1.3 最终Bug修复】连接规则列表选择变化信号 - 使用新的方法名
-        self.rule_list.currentItemChanged.connect(self.on_rule_selected)
+        """【中央仓储架构】连接响应式信号与槽 - 状态驱动的UI刷新"""
 
-        # 连接按钮信号（这些在create_left_panel中已经连接，这里重新确认）
-        # 注意：现在使用的是新的按钮名称
-        # self.btn_add_keyword_rule 和 self.btn_add_whitelist_rule 已在 create_left_panel 中连接
+        # 【核心连接】策略数据更新信号 → UI刷新槽
+        # 使用Qt.ConnectionType.QueuedConnection确保信号在UI线程中处理
+        from PyQt6.QtCore import Qt
+        self.engine.policies_updated.connect(
+            self.refresh_policy_list_from_engine,
+            Qt.ConnectionType.QueuedConnection
+        )
 
-    def load_rules_to_editor(self):
-        """加载规则到编辑器"""
+        # 规则列表选择事件
+        self.rule_list.itemClicked.connect(self.on_rule_selected)
+        self.rule_list.currentItemChanged.connect(self.on_rule_selection_changed)
+
+        # 确保信号连接成功
+        logging.info("响应式信号连接完成：策略更新 → UI刷新 (QueuedConnection)")
+        logging.info("规则列表点击和选择变更事件已连接")
+
+    def refresh_policy_list_from_engine(self):
+        """
+        【中央仓储架构】核心刷新槽 - UI列表更新的唯一入口
+
+        此方法是UI列表更新的唯一入口，响应引擎的policies_updated信号
+        实现单向数据流：Engine状态变更 → 信号发射 → UI刷新
+        """
         try:
-            # 清空规则列表
+            logging.debug("开始响应式UI刷新...")
+
+            # 1. 清空现有UI列表
             self.rule_list.clear()
 
-            # 遍历规则，添加到列表中
-            for rule in self.engine.rules:
-                rule_name = rule.get('rule_name', '未命名规则')
-                self.rule_list.addItem(rule_name)
+            # 2. 遍历引擎中的所有策略，重建UI列表
+            for i, policy in enumerate(self.engine.rules):
+                rule_name = policy.get('rule_name', '未命名规则')
 
-            # 如果有规则，选择第一个
-            if self.rule_list.count() > 0:
-                self.rule_list.setCurrentRow(0)
+                # 根据策略类型添加前缀标识
+                match_conditions = policy.get('match_conditions', {})
+                match_mode = match_conditions.get('match_mode', 'keywords')
 
-            logging.debug(f"已加载 {len(self.engine.rules)} 条规则到编辑器")
+                if match_mode == 'whitelist':
+                    type_prefix = "[白名单]"
+                else:
+                    type_prefix = "[关键词]"
+
+                # 【安全机制】检查策略是否启用，添加状态前缀
+                is_enabled = policy.get('enabled', False)
+                if not is_enabled:
+                    display_name = f"【已禁用】{type_prefix} {rule_name}"
+                else:
+                    display_name = f"{type_prefix} {rule_name}"
+
+                # 3. 为每条策略创建新列表项并添加到UI
+                item = QListWidgetItem(display_name)
+
+                # 【视觉提示】为禁用的策略设置灰色文本
+                if not is_enabled:
+                    from PyQt6.QtCore import Qt
+                    item.setForeground(Qt.GlobalColor.gray)
+
+                self.rule_list.addItem(item)
+                logging.debug(f"添加策略到UI: {i+1}. {display_name} (启用: {is_enabled})")
+
+            # 4. 更新状态显示
+            policy_count = len(self.engine.rules)
+            logging.info(f"✅ 响应式UI刷新完成: {policy_count} 条策略已同步到UI")
+
+            # 5. 如果没有策略，显示引导界面
+            if policy_count == 0:
+                self.guide_label.show()
+                self.stacked_widget.hide()
+                self.current_rule = None
+                logging.debug("无策略，显示引导界面")
 
         except Exception as e:
-            logging.error(f"加载规则到编辑器时出错: {e}")
-
-    def on_rule_selected(self, current_item, previous_item):
-        """【v1.3 最终Bug修复】彻底重写规则选择逻辑 - 基于行号索引的精确切换"""
-        # 如果没有选中项（例如删除后或清空选择），显示引导界面
-        if current_item is None:
+            logging.error(f"响应式UI刷新失败: {e}", exc_info=True)
+            # 即使出错也要确保UI处于一致状态
+            self.rule_list.clear()
             self.guide_label.show()
-            self.editor_stacked_widget.hide()
+            self.stacked_widget.hide()
+
+    def on_rule_selected(self, item):
+        """【v1.3 最终修正版】规则选择事件处理 - 使用索引确保正确切换"""
+        if item is None:
+            # 如果没有选中项，回到引导状态
+            self.guide_label.show()
+            self.stacked_widget.hide()
+            self.current_rule = None
             return
 
         try:
-            # 1. 获取当前被选中项的行号索引current_row
-            current_row = self.rule_list.currentRow()
-
-            # 2. 检查该索引是否有效
+            # 1. 获取当前选中的行号索引
+            current_row = self.rule_list.row(item)
+            
             if not (0 <= current_row < len(self.engine.rules)):
-                logging.warning(f"选择的规则索引无效: {current_row}, 规则总数: {len(self.engine.rules)}")
-                # 索引无效时，显示引导界面
-                self.guide_label.show()
-                self.editor_stacked_widget.hide()
+                logging.warning(f"选择的规则索引无效: {current_row}")
                 return
 
-            # 3. 直接使用current_row作为索引，从self.engine.rules列表中获取正确的策略对象policy
+            # 2. 【核心修复】直接使用索引从引擎获取策略对象
             policy = self.engine.rules[current_row]
+            self.current_rule = policy # 设置当前正在编辑的规则
+            
+            match_mode = policy.get('match_conditions', {}).get('match_mode', 'keyword')
+            logging.info(f"选中了第 {current_row} 行的规则，类型为: {match_mode}")
 
-            # 4. 从这个policy对象中，读取其'match_mode'字段的值
-            match_conditions = policy.get('match_conditions', {})
-            match_mode = match_conditions.get('match_mode', 'keywords')
-
-            # 5. 隐藏引导标签，显示编辑器
+            # 3. 隐藏引导标签，显示编辑器
             self.guide_label.hide()
-            self.editor_stacked_widget.show()
+            self.stacked_widget.show()
 
-            # 6. 根据match_mode的值，使用setCurrentIndex()将右侧的编辑区切换到对应的"卡片"
+            # 4. 根据策略类型，切换卡片并填充数据
             if match_mode == 'whitelist':
-                # 白名单编辑卡片
-                self.editor_stacked_widget.setCurrentIndex(1)
-                logging.info(f"切换到白名单策略 '{policy.get('rule_name')}' 的编辑界面（卡片索引1）")
-            elif match_mode == 'keywords' or match_mode == 'keyword':
-                # 关键词编辑卡片
-                self.editor_stacked_widget.setCurrentIndex(0)
-                logging.info(f"切换到关键词策略 '{policy.get('rule_name')}' 的编辑界面（卡片索引0）")
-            else:
-                # 默认使用关键词策略卡片
-                self.editor_stacked_widget.setCurrentIndex(0)
-                logging.warning(f"未知的策略类型: {match_mode}，使用默认关键词卡片")
-
-            # 7. 调用对应的fill_..._form(policy)方法，将policy对象中的数据填充到刚刚切换出来的、正确的UI界面上
-            if match_mode == 'whitelist':
-                self.fill_whitelist_form(policy)
-            else:
-                self.fill_keyword_form(policy)
-
-            logging.debug(f"已成功切换到规则 '{policy.get('rule_name', '未命名')}' 的编辑界面")
+                self.stacked_widget.setCurrentWidget(self.whitelist_card)
+                self.load_whitelist_rule(policy)
+            else: # 默认为keyword
+                self.stacked_widget.setCurrentWidget(self.keyword_card)
+                self.load_keyword_rule(policy)
 
         except Exception as e:
-            logging.error(f"规则选择切换时出错: {e}", exc_info=True)
-            # 出错时显示引导界面
-            self.guide_label.show()
-            self.editor_stacked_widget.hide()
+            logging.error(f"显示规则详情时出错: {e}", exc_info=True)
 
-    def fill_keyword_form(self, policy):
-        """填充关键词策略表单"""
+    def on_rule_selection_changed(self, current_item, previous_item):
+        """【UI同步修复】规则选择变更事件处理 - 确保UI状态同步"""
         try:
-            # 规则名称
-            self.edit_rule_name.setText(policy.get('rule_name', ''))
+            # 记录选择变更的详细信息
+            current_row = self.rule_list.currentRow() if current_item else -1
+            previous_row = self.rule_list.row(previous_item) if previous_item else -1
 
-            # 匹配条件
-            match_conditions = policy.get('match_conditions', {})
-            self.edit_city.setText(match_conditions.get('city', ''))
+            logging.debug(f"规则选择变更: {previous_row} -> {current_row}")
 
-            # 影院关键词（列表转字符串）
-            keywords = match_conditions.get('cinema_keywords', [])
-            self.edit_cinema_keywords.setText(','.join(keywords))
+            # 验证当前选择的有效性
+            if current_item is None:
+                # 没有选中任何项，回到引导状态
+                self.guide_label.show()
+                self.stacked_widget.hide()
+                self.current_rule = None
+                logging.debug("清除规则选择，显示引导界面")
+                return
 
-            # 影厅逻辑
-            hall_logic = policy.get('hall_logic', {})
-            mode = hall_logic.get('mode', 'INCLUDE').upper()
+            # 验证索引范围
+            if not (0 <= current_row < len(self.engine.rules)):
+                logging.warning(f"选择变更时索引无效: {current_row}, 规则总数: {len(self.engine.rules)}")
+                # 清除无效选择
+                self.rule_list.clearSelection()
+                self.guide_label.show()
+                self.stacked_widget.hide()
+                self.current_rule = None
+                return
 
-            # 设置单选按钮
-            if mode == 'ALL':
-                self.radio_all.setChecked(True)
-            elif mode == 'INCLUDE':
-                self.radio_include.setChecked(True)
-            elif mode == 'EXCLUDE':
-                self.radio_exclude.setChecked(True)
-
-            # 影厅列表
-            hall_list = hall_logic.get('hall_list', [])
-            self.edit_hall_list.setText(','.join(hall_list))
-
-            # 成本价
-            cost = hall_logic.get('cost', 0)
-            self.edit_cost.setText(str(cost))
-
-            # 最低利润
-            profit_logic = policy.get('profit_logic', {})
-            min_profit = profit_logic.get('min_profit_threshold', 0)
-            self.edit_min_profit.setText(str(min_profit))
-
-            # 启用状态
-            enabled = policy.get('enabled', True)
-            self.checkbox_enabled.setChecked(enabled)
+            # 调用原有的规则选择处理逻辑
+            self.on_rule_selected(current_item)
 
         except Exception as e:
-            logging.error(f"填充关键词表单时出错: {e}")
+            logging.error(f"处理规则选择变更时出错: {e}", exc_info=True)
 
-    def fill_whitelist_form(self, policy):
-        """填充白名单策略表单"""
-        try:
-            # 规则名称
-            self.edit_whitelist_rule_name.setText(policy.get('rule_name', ''))
+    def load_keyword_rule(self, rule):
+        """加载关键词策略到表单"""
+        self.current_strategy_type = 'keywords'
 
-            # 匹配条件
-            match_conditions = policy.get('match_conditions', {})
-            self.edit_whitelist_city.setText(match_conditions.get('city', ''))
+        # 显示关键词策略卡片
+        self.guide_label.hide()
+        self.stacked_widget.show()
+        self.stacked_widget.setCurrentWidget(self.keyword_card)
 
-            # 启用状态
-            enabled = policy.get('enabled', True)
-            self.checkbox_whitelist_enabled.setChecked(enabled)
+        # 填充表单数据
+        self.edit_rule_name.setText(rule.get('rule_name', ''))
 
-        except Exception as e:
-            logging.error(f"填充白名单表单时出错: {e}")
+        match_conditions = rule.get('match_conditions', {})
+        self.edit_city.setText(match_conditions.get('city', ''))
+
+        cinema_keywords = match_conditions.get('cinema_keywords', [])
+        self.edit_cinema_keywords.setText(', '.join(cinema_keywords))
+
+        hall_logic = rule.get('hall_logic', {})
+        hall_mode = hall_logic.get('mode', 'INCLUDE')
+
+        if hall_mode == 'ALL':
+            self.radio_all.setChecked(True)
+        elif hall_mode == 'INCLUDE':
+            self.radio_include.setChecked(True)
+        else:
+            self.radio_exclude.setChecked(True)
+
+        hall_list = hall_logic.get('hall_list', [])
+        self.edit_hall_list.setText(', '.join(hall_list))
+
+        self.edit_cost.setText(str(hall_logic.get('cost', 0)))
+
+        profit_logic = rule.get('profit_logic', {})
+        self.edit_min_profit.setText(str(profit_logic.get('min_profit_threshold', 0)))
+
+        self.checkbox_enabled.setChecked(rule.get('enabled', True))
+
+    def load_whitelist_rule(self, rule):
+        """【净化】加载白名单策略到表单 - 移除成本和利润字段处理"""
+        self.current_strategy_type = 'whitelist'
+
+        # 显示白名单策略卡片
+        self.guide_label.hide()
+        self.stacked_widget.show()
+        self.stacked_widget.setCurrentWidget(self.whitelist_card)
+
+        # 填充表单数据
+        self.edit_whitelist_rule_name.setText(rule.get('rule_name', ''))
+
+        match_conditions = rule.get('match_conditions', {})
+        self.edit_whitelist_city.setText(match_conditions.get('city', ''))
+
+        # 【净化】移除成本价和最低利润的加载，白名单策略不需要这些字段
+
+        # 加载高级筛选规则
+        filter_logic = rule.get('filter_logic', {})
+
+        # 【人性化升级】票数筛选 - 新的5个模板加载逻辑
+        ticket_counts = filter_logic.get('ticket_counts', [])
+        self.checkbox_ticket_1.setChecked(1 in ticket_counts)
+        self.checkbox_ticket_2.setChecked(2 in ticket_counts)
+        self.checkbox_ticket_3.setChecked(3 in ticket_counts)
+        self.checkbox_ticket_4.setChecked(4 in ticket_counts)
+        self.checkbox_ticket_5_plus.setChecked(any(x >= 5 for x in ticket_counts))
+
+        # 价格范围
+        price_range = filter_logic.get('price_range', {'min': 0, 'max': 200})
+        self.spin_min_price.setValue(price_range.get('min', 0))
+        self.spin_max_price.setValue(price_range.get('max', 200))
+
+        # 最低竞标价
+        self.edit_whitelist_min_bid.setValue(filter_logic.get('min_bid_price', 0))
+
+        self.checkbox_whitelist_enabled.setChecked(rule.get('enabled', True))
+
+        # 加载影院数量
+        policy_id = rule.get('rule_id')
+        if policy_id:
+            self.current_policy_id = policy_id
+            cinema_count = self.engine.get_whitelist_cinema_count(policy_id)
+            self.label_cinema_count.setText(f"已从数据库加载 {cinema_count} 个影院")
 
     def init_worker_thread(self):
         """初始化后台工作线程"""
-        # 创建线程和工作对象
-        self.thread = QThread()
-        self.worker = Worker(self.engine)
-
-        # 将worker移动到新线程中
-        self.worker.moveToThread(self.thread)
-
-        # 连接信号与槽
-        self.thread.started.connect(self.worker.run)
-        self.worker.new_opportunity.connect(self.add_opportunity_to_table)
-        self.worker.status_update.connect(self.statusBar().showMessage)
-        self.worker.cycle_finished.connect(self.update_status_bar)
-
-        # 启动线程
-        self.thread.start()     
-
-        # 更新状态栏
-        self.statusBar().showMessage("后台监控已启动，等待抢单机会...")
-
-    def add_opportunity_to_table(self, opportunity_data):
-        """槽函数：接收抢单机会数据并添加到表格中"""
-
-        # 【第一步：完整的语音处理模块】
         try:
-            # 日志记录，方便未来调试
+            # 创建工作线程
+            self.worker_thread = QThread()
+            self.worker = Worker(self.engine)
+
+            # 将Worker移动到线程中
+            self.worker.moveToThread(self.worker_thread)
+
+            # 连接信号
+            self.worker_thread.started.connect(self.worker.run)
+            self.worker.new_opportunity.connect(self.on_new_opportunity)
+            self.worker.status_update.connect(self.on_status_update)
+            self.worker.cycle_finished.connect(self.on_cycle_finished)
+
+            # 启动线程
+            self.worker_thread.start()
+
+            logging.info("后台工作线程已启动")
+
+        except Exception as e:
+            logging.error(f"启动后台工作线程失败: {e}")
+
+    def on_new_opportunity(self, opportunity_data):
+        """处理新的抢单机会"""
+
+        # 【第一步：建立语音处理的安全框架】
+        try:
+            # 日志记录，用于未来调试
             logging.info("MainWindow收到新机会，准备调用语音模块...")
 
-            # 声明空的alert_text字符串变量，用于存放最终要播报的文本
-            alert_text = ""
-
-            # 从传入的opportunity_data字典中获取type字段的值
+            # 【第二步：实现差异化的播报文本生成】
+            # 从opportunity_data字典中获取type字段的值
             opportunity_type = opportunity_data.get('type', opportunity_data.get('strategy_type', 'unknown'))
 
-            # 【第二步：实现差异化的文本生成逻辑】
             if opportunity_type == 'whitelist':
                 # 白名单策略的播报逻辑
                 platform = opportunity_data.get('platform', '未知平台')
@@ -877,12 +1247,12 @@ class MainWindow(QMainWindow):
             elif opportunity_type == 'keyword' or opportunity_type == 'keywords':
                 # 关键词策略的播报逻辑
                 platform = opportunity_data.get('platform', '未知平台')
-                profit = opportunity_data.get('total_profit')
+                profit = opportunity_data.get('profit', opportunity_data.get('total_profit'))
 
-                # 对profit字段进行检查，确保它存在且不为None
+                # 检查profit字段是否存在且不为None
                 if profit is not None:
                     try:
-                        # 安全地将profit转换为格式化的字符串（保留两位小数）
+                        # 安全地将profit转换为保留两位小数的字符串
                         profit_str = f"{float(profit):.2f}"
                         alert_text = f"{profit_str}元利润，{platform}平台来单了"
                     except (ValueError, TypeError):
@@ -910,112 +1280,97 @@ class MainWindow(QMainWindow):
             # 记录任何可能发生的未知异常
             logging.error(f"语音处理模块发生未知异常: {e}")
 
-        # 【第四步：确认UI更新逻辑】
+        # 【第四步：确保UI更新逻辑的执行】
         # 以下是原有的UI表格更新代码
         try:
-            # 提取平台和利润信息用于UI显示
-            platform_name = opportunity_data.get('platform', '未知')
-            total_profit = opportunity_data.get('total_profit', 0)
+            # 添加到表格
+            row_position = self.opportunities_table.rowCount()
+            self.opportunities_table.insertRow(row_position)
 
-            # 在表格顶部插入新行
-            self.table.insertRow(0)
+            # 填充数据
+            order = opportunity_data['order']
+            items = [
+                opportunity_data['platform'],
+                f"{opportunity_data['profit']:.2f}元",
+                f"{opportunity_data['seat_count']}张",
+                opportunity_data['rule_name'],
+                order.get('city', ''),
+                order.get('cinema_name', ''),
+                order.get('hall_type', '')
+            ]
 
-            # 从opportunity_data字典中提取信息并填充到表格
-            # 列顺序：['平台', '触发时间', '利润', '影院名称', '影厅', '场次', '竞标价', '匹配规则']
+            for col, item_text in enumerate(items):
+                item = QTableWidgetItem(str(item_text))
 
-            # 平台
-            platform_item = QTableWidgetItem(platform_name)
-            self.table.setItem(0, 0, platform_item)
+                # 设置利润列的颜色
+                if col == 1:  # 利润列
+                    item.setForeground(QColor(255, 0, 0))  # 红色
 
-            # 触发时间
-            timestamp_item = QTableWidgetItem(opportunity_data.get('timestamp', ''))
-            self.table.setItem(0, 1, timestamp_item)
+                self.opportunities_table.setItem(row_position, col, item)
 
-            # 利润（红色字体显示）
-            seat_count = opportunity_data.get('seat_count', 1)
-            profit_item = QTableWidgetItem(f"{total_profit:.1f}元 ({seat_count}张票)")
-            profit_item.setForeground(QColor(255, 0, 0))  # 红色字体
-            self.table.setItem(0, 2, profit_item)
+            # 自动滚动到最新行
+            self.opportunities_table.scrollToBottom()
 
-            # 影院名称
-            order_details = opportunity_data.get('order_details', {})
-            cinema_item = QTableWidgetItem(order_details.get('cinema_name', ''))
-            self.table.setItem(0, 3, cinema_item)
+            # 调整列宽
+            self.opportunities_table.resizeColumnsToContents()
 
-            # 影厅
-            hall_item = QTableWidgetItem(order_details.get('hall_type', ''))
-            self.table.setItem(0, 4, hall_item)
-
-            # 场次
-            show_time_item = QTableWidgetItem(opportunity_data.get('show_time', ''))
-            self.table.setItem(0, 5, show_time_item)
-
-            # 竞标价
-            bidding_price = order_details.get('bidding_price', 0)
-            price_item = QTableWidgetItem(f"{bidding_price:.1f}元")
-            self.table.setItem(0, 6, price_item)
-
-            # 匹配规则
-            rule_item = QTableWidgetItem(opportunity_data.get('rule_name', ''))
-            self.table.setItem(0, 7, rule_item)
-
-            # 限制表格行数，避免数据过多
-            if self.table.rowCount() > 100:
-                self.table.removeRow(100)
-
-            # 更新状态栏
-            total_opportunities = self.table.rowCount()
-            self.statusBar().showMessage(f"发现 {total_opportunities} 个抢单机会，最新利润：{total_profit:.1f}元")
-
-            # 记录抢单机会
-            logging.info(f"发现抢单机会: {opportunity_data['rule_name']} - 总利润 {opportunity_data['total_profit']:.2f}元 ({opportunity_data['seat_count']}张票)")
+            logging.info(f"发现抢单机会: {opportunity_data['platform']} - {opportunity_data['profit']:.2f}元")
 
         except Exception as e:
-            logging.error(f"添加数据到表格时出错: {e}")
+            logging.error(f"处理抢单机会失败: {e}")
 
-    def update_status_bar(self, platform_names, new_order_count):
-        """
-        更新状态栏显示多平台状态
+    def on_status_update(self, status_text):
+        """处理状态更新"""
+        self.statusBar().showMessage(status_text)
 
-        Args:
-            platform_names (list): 成功获取数据的平台名称列表
-            new_order_count (int): 新订单总数
-        """
-        try:
-            if platform_names:
-                platforms_text = ', '.join(platform_names)
-                status_text = f"({platforms_text}) 获取完成，新增 {new_order_count} 条订单。{API_REQUEST_INTERVAL}秒后开始下一次轮询..."
-            else:
-                status_text = f"所有平台获取失败，{API_REQUEST_INTERVAL}秒后重试..."
+    def on_cycle_finished(self, successful_platforms, total_new_orders):
+        """处理轮询周期完成"""
+        # 调试日志：记录状态更新的详细信息
+        logging.debug(f"🔄 轮询周期完成 - 成功平台: {successful_platforms}, 新订单总数: {total_new_orders}")
 
-            self.statusBar().showMessage(status_text)
+        if successful_platforms:
+            platforms_text = ", ".join(successful_platforms)
+            status_text = f"轮询完成 - {platforms_text} - 新订单: {total_new_orders}"
+        else:
+            status_text = "轮询完成 - 所有平台都失败"
 
-        except Exception as e:
-            logging.error(f"更新状态栏时出错: {e}")
+        self.statusBar().showMessage(status_text)
+
+        # 调试日志：记录最终状态栏显示内容
+        logging.debug(f"📱 状态栏更新: {status_text}")
 
     def closeEvent(self, event):
-        """重写关闭事件，实现优雅退出"""
+        """窗口关闭事件"""
         try:
-            logging.info("正在关闭应用程序...")
+            # 停止后台线程
+            if hasattr(self, 'worker_thread') and self.worker_thread.isRunning():
+                self.worker_thread.quit()
+                self.worker_thread.wait(3000)  # 等待最多3秒
 
-            # 安全地退出后台线程
-            if hasattr(self, 'thread') and self.thread.isRunning():
-                logging.info("正在停止后台监控线程...")
-                self.thread.quit()  # 请求线程退出
+            # 关闭数据库连接
+            if hasattr(self, 'db_manager'):
+                self.db_manager.close()
 
-                # 等待线程完全退出，最多等待3秒
-                if self.thread.wait(3000):  # 3000毫秒 = 3秒
-                    logging.info("后台线程已安全退出")
-                else:
-                    logging.warning("后台线程退出超时，强制终止")
-                    self.thread.terminate()
-                    self.thread.wait(1000)  # 再等待1秒确保终止
-
-            # 正式关闭窗口
+            logging.info("应用程序正常退出")
             event.accept()
-            logging.info("应用程序已关闭")
 
         except Exception as e:
-            logging.error(f"关闭应用程序时出错: {e}")
-            # 即使出错也要关闭窗口
+            logging.error(f"关闭应用程序时发生错误: {e}")
             event.accept()
+
+
+def main():
+    """主函数"""
+    # 创建应用程序
+    app = QApplication(sys.argv)
+
+    # 创建主窗口
+    window = MainWindow()
+    window.show()
+
+    # 运行应用程序
+    sys.exit(app.exec())
+
+
+if __name__ == "__main__":
+    main()

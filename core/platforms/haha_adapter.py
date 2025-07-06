@@ -58,7 +58,11 @@ class HahaAdapter(BaseAdapter):
                     # 检查HTTP状态码
                     if response.status != 200:
                         logging.error(f"HTTP请求失败，状态码: {response.status}")
-                        return []
+                        return {
+                            'name': self.name,
+                            'success': False,
+                            'orders': []
+                        }
 
             # 解析JSON响应并提取数据
             try:
@@ -70,7 +74,11 @@ class HahaAdapter(BaseAdapter):
                     status = api_response.get('status') or api_response.get('code')
                     if status and status != 200:
                         logging.error(f"API返回错误状态: {api_response}")
-                        return []
+                        return {
+                            'name': self.name,
+                            'success': False,
+                            'orders': []
+                        }
 
                 # 2. 提取数据内容
                 # 根据实际API响应结构提取数据，可能是加密数据或直接的订单数据
@@ -83,7 +91,11 @@ class HahaAdapter(BaseAdapter):
 
                 if not raw_data:
                     logging.warning("API响应中没有找到有效数据")
-                    return []
+                    return {
+                        'name': self.name,
+                        'success': False,
+                        'orders': []
+                    }
 
                 # 3. 判断是否需要解密
                 if isinstance(raw_data, str):
@@ -91,19 +103,31 @@ class HahaAdapter(BaseAdapter):
                     decrypted_orders = await self._decrypt_data(raw_data)
                     if not decrypted_orders:
                         logging.warning("解密后没有获得有效的订单数据")
-                        return []
+                        return {
+                            'name': self.name,
+                            'success': True,  # 解密成功但没有数据，仍然算作成功
+                            'orders': []
+                        }
                 elif isinstance(raw_data, list):
                     # 如果是列表，可能是直接的订单数据
                     logging.info("检测到列表数据，直接处理...")
                     decrypted_orders = raw_data
                 else:
                     logging.warning(f"未知的数据格式: {type(raw_data)}")
-                    return []
+                    return {
+                        'name': self.name,
+                        'success': False,
+                        'orders': []
+                    }
 
             except json.JSONDecodeError as e:
                 logging.error(f"解析API响应JSON失败: {e}")
                 logging.error(f"原始响应内容: {response_text}")
-                return []
+                return {
+                    'name': self.name,
+                    'success': False,
+                    'orders': []
+                }
 
             # 4. 精确预过滤：只保留 is_from != '5' 的订单
             filtered_orders = []

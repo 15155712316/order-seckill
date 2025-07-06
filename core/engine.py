@@ -286,7 +286,8 @@ class RuleEngine(QObject):
                     'total_profit': total_profit,
                     'seat_count': order_seat_count,
                     'rule_name': rule.get('rule_name', '未命名规则'),
-                    'order_details': order.copy()  # 返回订单详情的副本
+                    'order_details': order.copy(),  # 返回订单详情的副本
+                    'strategy_type': 'keyword'  # 标识策略类型
                 }
 
         # 如果循环正常结束，说明没有任何规则匹配成功
