@@ -180,8 +180,12 @@ class MainWindow(QMainWindow):
         self.create_monitoring_tab()
         self.create_editor_tab()
 
-        # 创建规则引擎实例
-        self.engine = RuleEngine(RULES_FILE)
+        # 【v1.3 最终Bug修复】初始化数据库管理器（支持白名单策略删除）
+        from core.database import DatabaseManager
+        self.db_manager = DatabaseManager()
+
+        # 创建规则引擎实例（传入数据库管理器）
+        self.engine = RuleEngine(RULES_FILE, self.db_manager)
 
         # 初始化语音播放器
         self.tts_player = TTSPlayer()
@@ -457,27 +461,31 @@ class MainWindow(QMainWindow):
             logging.error(f"添加新规则时出错: {e}")
 
     def delete_selected_rule(self):
-        """【v1.3 Bug修复指令：修正删除逻辑】删除选中的规则"""
+        """【v1.3 最终Bug修复】彻底重写删除逻辑 - 基于行号索引的精确删除"""
         try:
-            # a. 获取当前在左侧QListWidget中被选中的行号索引
+            # 1. 获取当前在QListWidget中被选中的行号索引
             current_row = self.rule_list.currentRow()
 
-            # b. 检查这个current_row是否有效（即是否大于等于0）
-            if current_row < 0:
-                self.statusBar().showMessage("请先选择要删除的规则")
+            # 2. 检查current_row是否有效（是否为-1）
+            if current_row == -1:
+                self.statusBar().showMessage("请先在左侧列表中选择要删除的规则")
                 return
 
-            # 验证索引范围
-            if current_row >= len(self.engine.rules):
-                self.statusBar().showMessage("选择的规则索引无效")
-                logging.error(f"删除规则时索引超出范围: {current_row}, 规则总数: {len(self.engine.rules)}")
+            # 验证索引范围，确保不会越界
+            if not (0 <= current_row < len(self.engine.rules)):
+                self.statusBar().showMessage("选择的规则索引无效，请重新选择")
+                logging.error(f"删除规则时索引无效: {current_row}, 规则总数: {len(self.engine.rules)}")
                 return
 
-            # 获取要删除的规则信息用于确认对话框
+            # 3. 从self.engine.rules列表中，使用current_row作为索引，获取将要被删除的规则对象
             rule_to_delete = self.engine.rules[current_row]
             rule_name = rule_to_delete.get('rule_name', f"规则{current_row + 1}")
 
-            # d. 弹出QMessageBox进行二次确认，防止用户误删
+            # 获取规则类型，用于后续数据库清理
+            match_conditions = rule_to_delete.get('match_conditions', {})
+            match_mode = match_conditions.get('match_mode', 'keywords')
+
+            # 4. 弹出QMessageBox进行二次确认，防止用户误删
             reply = QMessageBox.question(
                 self,
                 "确认删除",
@@ -490,25 +498,32 @@ class MainWindow(QMainWindow):
             if reply != QMessageBox.StandardButton.Yes:
                 return
 
-            # c. 直接使用这个索引从self.engine.rules列表中精确地移除对应的策略对象
+            # 5. 直接使用del self.engine.rules[current_row]从内存中精确地删除该规则对象
             del self.engine.rules[current_row]
 
-            # e. 调用self.engine.save_policies_to_file()方法，将最新的规则列表持久化到rules.json文件
-            # 注意：根据engine.py的实际方法名，使用save_rules方法
+            # 6. 如果被删除的规则是白名单类型，则调用数据库管理器清理其在数据库中的关联影院
+            if match_mode == 'whitelist':
+                policy_id = rule_to_delete.get('rule_id')
+                if policy_id:
+                    deleted_count = self.db_manager.clear_cinemas_for_policy(policy_id)
+                    logging.info(f"已从数据库中删除策略ID为 {policy_id} 的 {deleted_count} 个白名单影院")
+
+            # 7. 调用self.engine.save_rules()将最新的规则列表持久化保存
             success = self.engine.save_rules(self.engine.rules)
             if not success:
                 logging.error("保存规则到文件失败")
                 self.statusBar().showMessage("删除成功但保存失败，请检查文件权限")
                 return
 
-            # f. 调用self.load_rules_to_editor()方法，来刷新UI上的规则列表
+            # 8. 【关键】调用self.load_rules_to_editor()方法，以"推倒重建"的方式，完整地刷新左侧的UI列表
             self.load_rules_to_editor()
 
-            # 清空并隐藏编辑器
+            # 9. 将右侧的编辑区恢复到初始的引导界面状态
             self.guide_label.show()
             self.editor_stacked_widget.hide()
 
-            logging.info(f"规则 '{rule_name}' 已被成功删除（索引: {current_row}）")
+            # 成功提示
+            logging.info(f"规则 '{rule_name}' 已被成功删除（原索引: {current_row}）")
             self.statusBar().showMessage(f"规则 '{rule_name}' 已删除")
 
         except Exception as e:
@@ -669,8 +684,8 @@ class MainWindow(QMainWindow):
 
     def connect_signals(self):
         """连接信号与槽"""
-        # 连接规则列表选择变化信号
-        self.rule_list.currentItemChanged.connect(self.display_rule_details)
+        # 【v1.3 最终Bug修复】连接规则列表选择变化信号 - 使用新的方法名
+        self.rule_list.currentItemChanged.connect(self.on_rule_selected)
 
         # 连接按钮信号（这些在create_left_panel中已经连接，这里重新确认）
         # 注意：现在使用的是新的按钮名称
@@ -696,90 +711,64 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logging.error(f"加载规则到编辑器时出错: {e}")
 
-    def display_rule_details(self, current_item):
-        """【v1.3 Bug修复】显示规则详情 - 支持策略类型卡片切换"""
+    def on_rule_selected(self, current_item, previous_item):
+        """【v1.3 最终Bug修复】彻底重写规则选择逻辑 - 基于行号索引的精确切换"""
+        # 如果没有选中项（例如删除后或清空选择），显示引导界面
         if current_item is None:
-            # 如果没有选中项（例如删除后），显示引导，隐藏编辑器
             self.guide_label.show()
             self.editor_stacked_widget.hide()
             return
 
         try:
-            # 1. 获取当前选中的行号索引
+            # 1. 获取当前被选中项的行号索引current_row
             current_row = self.rule_list.currentRow()
-            
+
+            # 2. 检查该索引是否有效
             if not (0 <= current_row < len(self.engine.rules)):
+                logging.warning(f"选择的规则索引无效: {current_row}, 规则总数: {len(self.engine.rules)}")
+                # 索引无效时，显示引导界面
+                self.guide_label.show()
+                self.editor_stacked_widget.hide()
                 return
 
-            # 2. 根据索引获取完整的策略对象
-            policy = self.engine.rules[current_row]
-            match_mode = policy.get('match_mode', 'keyword') 
-
-            # 3. 隐藏引导标签，显示编辑器
-            self.guide_label.hide()
-            self.editor_stacked_widget.show()
-
-            # 4. 核心的卡片切换逻辑
-            if match_mode == 'whitelist':
-                self.editor_stacked_widget.setCurrentIndex(1) # 切换到白名单卡片
-                self.fill_whitelist_form(policy) # 用白名单数据填充表单
-                logging.info(f"已切换到白名单策略 '{policy.get('rule_name')}' 的编辑界面。")
-            else: # 默认为keyword
-                self.editor_stacked_widget.setCurrentIndex(0) # 切换到关键词卡片
-                self.fill_keyword_form(policy) # 用关键词数据填充表单
-                logging.info(f"已切换到关键词策略 '{policy.get('rule_name')}' 的编辑界面。")
-
-        except Exception as e:
-            logging.error(f"显示规则详情时出错: {e}", exc_info=True)
-        """【v1.3 Bug修复】显示规则详情 - 支持策略类型卡片切换"""
-        if current_item is None:
-            # 显示引导标签，隐藏编辑器
-            self.guide_label.show()
-            self.editor_stacked_widget.hide()
-            return
-
-        try:
-            # a. 获取当前选中的行号索引
-            current_row = self.rule_list.currentRow()
-
-            if current_row == -1 or current_row >= len(self.engine.rules):
-                logging.warning(f"无效的行号索引: {current_row}")
-                return
-
-            # b. 根据索引从self.engine.rules列表中获取完整的策略对象
+            # 3. 直接使用current_row作为索引，从self.engine.rules列表中获取正确的策略对象policy
             policy = self.engine.rules[current_row]
 
-            # c. 核心的卡片切换逻辑
+            # 4. 从这个policy对象中，读取其'match_mode'字段的值
             match_conditions = policy.get('match_conditions', {})
             match_mode = match_conditions.get('match_mode', 'keywords')
 
-            # 隐藏引导标签，显示编辑器
+            # 5. 隐藏引导标签，显示编辑器
             self.guide_label.hide()
             self.editor_stacked_widget.show()
 
+            # 6. 根据match_mode的值，使用setCurrentIndex()将右侧的编辑区切换到对应的"卡片"
             if match_mode == 'whitelist':
-                # i. 白名单策略 - 切换到索引1
+                # 白名单编辑卡片
                 self.editor_stacked_widget.setCurrentIndex(1)
-                logging.info(f"切换到白名单编辑卡片（索引1）")
+                logging.info(f"切换到白名单策略 '{policy.get('rule_name')}' 的编辑界面（卡片索引1）")
             elif match_mode == 'keywords' or match_mode == 'keyword':
-                # ii. 关键词策略 - 切换到索引0
+                # 关键词编辑卡片
                 self.editor_stacked_widget.setCurrentIndex(0)
-                logging.info(f"切换到关键词编辑卡片（索引0）")
+                logging.info(f"切换到关键词策略 '{policy.get('rule_name')}' 的编辑界面（卡片索引0）")
             else:
                 # 默认使用关键词策略卡片
                 self.editor_stacked_widget.setCurrentIndex(0)
                 logging.warning(f"未知的策略类型: {match_mode}，使用默认关键词卡片")
 
-            # d. 将policy中的数据填充到对应表单的逻辑
+            # 7. 调用对应的fill_..._form(policy)方法，将policy对象中的数据填充到刚刚切换出来的、正确的UI界面上
             if match_mode == 'whitelist':
                 self.fill_whitelist_form(policy)
             else:
                 self.fill_keyword_form(policy)
 
-            logging.debug(f"已显示规则详情: {policy.get('rule_name', '未命名')}")
+            logging.debug(f"已成功切换到规则 '{policy.get('rule_name', '未命名')}' 的编辑界面")
 
         except Exception as e:
-            logging.error(f"显示规则详情时出错: {e}")
+            logging.error(f"规则选择切换时出错: {e}", exc_info=True)
+            # 出错时显示引导界面
+            self.guide_label.show()
+            self.editor_stacked_widget.hide()
 
     def fill_keyword_form(self, policy):
         """填充关键词策略表单"""

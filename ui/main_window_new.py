@@ -78,15 +78,22 @@ class Worker(QObject):
 
                     for i, result in enumerate(results):
                         platform_name = [HAHA_PLATFORM_NAME, MAHUA_PLATFORM_NAME][i]
-                        
+
                         if isinstance(result, Exception):
                             logging.error(f"{platform_name}平台获取数据失败: {result}")
                             continue
-                        
+
+                        # 调试日志：打印平台返回的完整结果结构
+                        logging.debug(f"🔍 {platform_name}平台返回结果: success={result.get('success')}, 字段={list(result.keys())}")
+
                         if result['success']:
                             successful_platforms.append(platform_name)
-                            new_orders = result.get('new_orders', [])
-                            total_new_orders += len(new_orders)
+                            new_orders = result.get('orders', [])  # 修复：使用正确的字段名 'orders'
+                            order_count = len(new_orders)
+                            total_new_orders += order_count
+
+                            # 调试日志：详细记录订单计数
+                            logging.debug(f"📊 {platform_name}平台: 获取到 {order_count} 条新订单，累计 {total_new_orders} 条")
                             
                             # 对每个新订单进行规则匹配
                             for order in new_orders:
@@ -671,56 +678,78 @@ class MainWindow(QMainWindow):
         return cinema_names
 
     def delete_selected_rule(self):
-        """删除选中的规则"""
+        """
+        【v1.3 最终修正版】删除选中的规则 - 使用行号索引直接删除，根治前缀匹配问题
+        """
         try:
-            current_item = self.rule_list.currentItem()
-            if not current_item:
-                QMessageBox.warning(self, "提示", "请先选择要删除的规则")
+            # 1. 获取当前在QListWidget中被选中的行号索引
+            current_row = self.rule_list.currentRow()
+
+            # 2. 检查索引是否有效（用户是否真的选中了一项）
+            if current_row == -1:
+                self.statusBar().showMessage("请先在左侧列表中选择要删除的规则")
                 return
 
-            rule_name = current_item.text()
+            # 3. 从内存中获取规则对象，用于弹窗确认时显示名字
+            if not (0 <= current_row < len(self.engine.rules)):
+                logging.error(f"尝试删除一个无效的UI索引: {current_row}")
+                self.statusBar().showMessage("删除失败：内部索引错误，请重启应用")
+                return
+            
+            rule_to_delete = self.engine.rules[current_row]
+            # 动态生成带前缀的显示名称，用于弹窗
+            match_mode = rule_to_delete.get('match_conditions', {}).get('match_mode', 'keyword')
+            prefix = "[白名单]" if match_mode == 'whitelist' else "[关键词]"
+            rule_name_for_display = f"{prefix} {rule_to_delete.get('rule_name', '')}"
 
-            # 确认删除
+            # 4. 弹出二次确认对话框
             reply = QMessageBox.question(
                 self, "确认删除",
-                f"确定要删除规则 '{rule_name}' 吗？",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+                f"您确定要删除规则 '{rule_name_for_display}' 吗？\n此操作无法撤销。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
             )
 
+            # 5. 如果用户点击“No”，则不执行任何操作
             if reply != QMessageBox.StandardButton.Yes:
                 return
 
-            # 查找并删除规则
-            rule_to_delete = None
-            for rule in self.engine.rules:
-                if rule.get('rule_name') == rule_name:
-                    rule_to_delete = rule
-                    break
+            # 6. 【核心修复】直接使用行号索引，从规则列表中精确删除对象
+            del self.engine.rules[current_row]
+            
+            # 7. 如果是白名单策略，需要从数据库中删除其关联的影院
+            if match_mode == 'whitelist':
+                policy_id = rule_to_delete.get('rule_id')
+                if policy_id:
+                    self.db_manager.clear_cinemas_for_policy(policy_id)
+                    logging.info(f"已从数据库中删除策略ID为 {policy_id} 的白名单影院。")
 
-            if rule_to_delete:
-                # 如果是白名单策略，清空数据库中的影院数据
-                match_conditions = rule_to_delete.get('match_conditions', {})
-                if match_conditions.get('match_mode') == 'whitelist':
-                    policy_id = rule_to_delete.get('rule_id')
-                    if policy_id:
-                        self.db_manager.clear_cinemas_for_policy(policy_id)
+            # 8. 将修改后的规则列表持久化保存到文件
+            success = self.engine.save_rules(self.engine.rules)
+            if not success:
+                logging.error("保存规则到文件失败")
+                self.statusBar().showMessage("删除成功但保存失败，请检查文件权限")
+                return
+            
+            # 9. 【UI同步修复】清除当前选择状态，避免索引不同步
+            self.rule_list.clearSelection()
+            self.current_rule = None
 
-                # 从规则列表中删除
-                self.engine.rules.remove(rule_to_delete)
+            # 10. 从内存重新加载规则并刷新左侧UI列表
+            self.load_rules_to_editor()
 
-                # 保存到文件并刷新UI
-                self.save_rules_to_file()
-                self.load_rules_to_editor()
+            # 11. 清空并隐藏右侧的编辑器，回到初始引导状态
+            self.guide_label.show()
+            self.stacked_widget.hide()
 
-                logging.info(f"规则 '{rule_name}' 已被删除")
-                self.statusBar().showMessage(f"规则 '{rule_name}' 已删除")
-            else:
-                QMessageBox.warning(self, "错误", f"未找到规则 '{rule_name}'")
+            # 12. 记录删除成功和UI状态
+            logging.info(f"规则 '{rule_name_for_display}' 已被成功删除")
+            logging.debug(f"删除后规则总数: {len(self.engine.rules)}, UI列表项数: {self.rule_list.count()}")
+            self.statusBar().showMessage(f"规则 '{rule_name_for_display}' 已删除")
 
         except Exception as e:
-            logging.error(f"删除规则失败: {e}")
-            QMessageBox.warning(self, "错误", f"删除规则失败: {e}")
-
+            logging.error(f"删除规则时发生未知错误: {e}", exc_info=True)
+            self.statusBar().showMessage("删除规则失败，请查看日志。")
     def save_current_rule(self):
         """保存当前规则"""
         try:
@@ -927,13 +956,17 @@ class MainWindow(QMainWindow):
             raise
 
     def load_rules_to_editor(self):
-        """加载规则到编辑器"""
+        """【UI同步修复】加载规则到编辑器 - 增强同步验证"""
         try:
+            # 记录加载前状态
+            old_count = self.rule_list.count()
+            logging.debug(f"加载前UI列表项数: {old_count}, 后台规则数: {len(self.engine.rules)}")
+
             # 清空规则列表
             self.rule_list.clear()
 
             # 添加规则到列表
-            for rule in self.engine.rules:
+            for i, rule in enumerate(self.engine.rules):
                 rule_name = rule.get('rule_name', '未命名规则')
                 match_mode = rule.get('match_conditions', {}).get('match_mode', 'keywords')
 
@@ -944,67 +977,99 @@ class MainWindow(QMainWindow):
                     display_name = f"[关键词] {rule_name}"
 
                 self.rule_list.addItem(display_name)
+                logging.debug(f"添加规则 {i}: {display_name}")
 
-            logging.info(f"已加载 {len(self.engine.rules)} 条规则到编辑器")
+            # 验证加载结果
+            new_count = self.rule_list.count()
+            if new_count == len(self.engine.rules):
+                logging.info(f"✅ 规则加载成功: {new_count} 条规则已同步到UI")
+            else:
+                logging.warning(f"⚠️ UI同步异常: UI显示 {new_count} 条，后台有 {len(self.engine.rules)} 条")
 
         except Exception as e:
-            logging.error(f"加载规则到编辑器失败: {e}")
+            logging.error(f"加载规则到编辑器失败: {e}", exc_info=True)
 
     def connect_signals(self):
-        """连接信号与槽"""
-        # 规则列表选择事件
+        """【UI同步修复】连接信号与槽 - 完整的信号连接"""
+        # 规则列表选择事件 - 连接多个信号确保UI同步
         self.rule_list.itemClicked.connect(self.on_rule_selected)
+        self.rule_list.currentItemChanged.connect(self.on_rule_selection_changed)
 
         # 确保信号连接成功
-        logging.info("规则列表点击事件已连接")
+        logging.info("规则列表点击和选择变更事件已连接")
 
     def on_rule_selected(self, item):
-        """规则选择事件处理"""
+        """【v1.3 最终修正版】规则选择事件处理 - 使用索引确保正确切换"""
+        if item is None:
+            # 如果没有选中项，回到引导状态
+            self.guide_label.show()
+            self.stacked_widget.hide()
+            self.current_rule = None
+            return
+
         try:
-            # 添加调试信息
-            logging.info(f"规则选择事件触发: {item.text()}")
-
-            # 获取规则名称（去掉前缀）
-            display_name = item.text()
-            if display_name.startswith('[白名单] '):
-                rule_name = display_name[6:]  # 去掉 "[白名单] "
-            elif display_name.startswith('[关键词] '):
-                rule_name = display_name[6:]  # 去掉 "[关键词] "
-            else:
-                rule_name = display_name
-
-            logging.info(f"解析后的规则名称: {rule_name}")
-
-            # 查找对应的规则
-            selected_rule = None
-            for rule in self.engine.rules:
-                if rule.get('rule_name') == rule_name:
-                    selected_rule = rule
-                    break
-
-            if not selected_rule:
-                logging.warning(f"未找到规则: {rule_name}")
+            # 1. 获取当前选中的行号索引
+            current_row = self.rule_list.row(item)
+            
+            if not (0 <= current_row < len(self.engine.rules)):
+                logging.warning(f"选择的规则索引无效: {current_row}")
                 return
 
-            # 设置当前规则
-            self.current_rule = selected_rule
-            logging.info(f"当前规则已设置: {selected_rule.get('rule_id')}")
+            # 2. 【核心修复】直接使用索引从引擎获取策略对象
+            policy = self.engine.rules[current_row]
+            self.current_rule = policy # 设置当前正在编辑的规则
+            
+            match_mode = policy.get('match_conditions', {}).get('match_mode', 'keyword')
+            logging.info(f"选中了第 {current_row} 行的规则，类型为: {match_mode}")
 
-            # 根据策略类型显示对应的编辑卡片
-            match_mode = selected_rule.get('match_conditions', {}).get('match_mode', 'keywords')
-            logging.info(f"策略类型: {match_mode}")
+            # 3. 隐藏引导标签，显示编辑器
+            self.guide_label.hide()
+            self.stacked_widget.show()
 
+            # 4. 根据策略类型，切换卡片并填充数据
             if match_mode == 'whitelist':
-                logging.info("加载白名单策略")
-                self.load_whitelist_rule(selected_rule)
-            else:
-                logging.info("加载关键词策略")
-                self.load_keyword_rule(selected_rule)
+                self.stacked_widget.setCurrentWidget(self.whitelist_card)
+                self.load_whitelist_rule(policy)
+            else: # 默认为keyword
+                self.stacked_widget.setCurrentWidget(self.keyword_card)
+                self.load_keyword_rule(policy)
 
         except Exception as e:
-            logging.error(f"选择规则失败: {e}")
-            import traceback
-            traceback.print_exc()
+            logging.error(f"显示规则详情时出错: {e}", exc_info=True)
+
+    def on_rule_selection_changed(self, current_item, previous_item):
+        """【UI同步修复】规则选择变更事件处理 - 确保UI状态同步"""
+        try:
+            # 记录选择变更的详细信息
+            current_row = self.rule_list.currentRow() if current_item else -1
+            previous_row = self.rule_list.row(previous_item) if previous_item else -1
+
+            logging.debug(f"规则选择变更: {previous_row} -> {current_row}")
+
+            # 验证当前选择的有效性
+            if current_item is None:
+                # 没有选中任何项，回到引导状态
+                self.guide_label.show()
+                self.stacked_widget.hide()
+                self.current_rule = None
+                logging.debug("清除规则选择，显示引导界面")
+                return
+
+            # 验证索引范围
+            if not (0 <= current_row < len(self.engine.rules)):
+                logging.warning(f"选择变更时索引无效: {current_row}, 规则总数: {len(self.engine.rules)}")
+                # 清除无效选择
+                self.rule_list.clearSelection()
+                self.guide_label.show()
+                self.stacked_widget.hide()
+                self.current_rule = None
+                return
+
+            # 调用原有的规则选择处理逻辑
+            self.on_rule_selected(current_item)
+
+        except Exception as e:
+            logging.error(f"处理规则选择变更时出错: {e}", exc_info=True)
 
     def load_keyword_rule(self, rule):
         """加载关键词策略到表单"""
@@ -1161,6 +1226,9 @@ class MainWindow(QMainWindow):
 
     def on_cycle_finished(self, successful_platforms, total_new_orders):
         """处理轮询周期完成"""
+        # 调试日志：记录状态更新的详细信息
+        logging.debug(f"🔄 轮询周期完成 - 成功平台: {successful_platforms}, 新订单总数: {total_new_orders}")
+
         if successful_platforms:
             platforms_text = ", ".join(successful_platforms)
             status_text = f"轮询完成 - {platforms_text} - 新订单: {total_new_orders}"
@@ -1168,6 +1236,9 @@ class MainWindow(QMainWindow):
             status_text = "轮询完成 - 所有平台都失败"
 
         self.statusBar().showMessage(status_text)
+
+        # 调试日志：记录最终状态栏显示内容
+        logging.debug(f"📱 状态栏更新: {status_text}")
 
     def closeEvent(self, event):
         """窗口关闭事件"""
