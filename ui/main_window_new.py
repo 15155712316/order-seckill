@@ -549,41 +549,24 @@ class MainWindow(QMainWindow):
         self.label_cinema_count.setText("已从数据库加载 0 个影院")
 
     def import_excel_whitelist(self):
-        """导入Excel白名单"""
+        """导入Excel白名单 - v1.3 Bug修复版本"""
         try:
             # 打开文件选择对话框
             file_path, _ = QFileDialog.getOpenFileName(
                 self,
                 "选择Excel文件",
                 "",
-                "Excel文件 (*.xlsx *.xls);;所有文件 (*)"
+                "Excel文件 (*.xlsx *.xls);;CSV文件 (*.csv);;所有文件 (*)"
             )
 
             if not file_path:
                 return
 
-            # 读取Excel文件
-            try:
-                df = pd.read_excel(file_path)
-            except Exception as e:
-                QMessageBox.warning(self, "错误", f"读取Excel文件失败: {e}")
-                return
-
-            # 检查文件格式
-            if df.empty:
-                QMessageBox.warning(self, "错误", "Excel文件为空")
-                return
-
-            # 获取第一列作为影院名称
-            cinema_names = set()
-            first_column = df.iloc[:, 0]
-
-            for value in first_column:
-                if pd.notna(value) and str(value).strip():
-                    cinema_names.add(str(value).strip())
+            # 使用新的健壮文件解析方法
+            cinema_names = self.load_cinemas_from_file(file_path)
 
             if not cinema_names:
-                QMessageBox.warning(self, "错误", "未找到有效的影院名称")
+                # 错误信息已在load_cinemas_from_file中处理
                 return
 
             # 生成临时策略ID（如果是新策略）
@@ -612,6 +595,80 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logging.error(f"导入Excel白名单失败: {e}")
             QMessageBox.warning(self, "错误", f"导入失败: {e}")
+
+    def load_cinemas_from_file(self, file_path: str) -> set:
+        """
+        【v1.3 Bug修复】从文件加载影院名单的健壮方法
+
+        Args:
+            file_path (str): 文件路径
+
+        Returns:
+            set: 影院名称集合，失败时返回空集合
+        """
+        try:
+            # 根据文件扩展名选择读取方法
+            if file_path.lower().endswith('.csv'):
+                df = pd.read_csv(file_path, encoding='utf-8')
+            else:
+                # Excel文件
+                df = pd.read_excel(file_path)
+
+            logging.info(f"成功读取文件: {file_path}")
+            logging.info(f"文件包含 {len(df)} 行数据，列名: {list(df.columns)}")
+
+        except Exception as e:
+            error_msg = f"读取文件失败: {e}"
+            logging.error(error_msg)
+            QMessageBox.warning(self, "错误", error_msg)
+            return set()
+
+        # 检查文件是否为空
+        if df.empty:
+            error_msg = "文件为空，没有数据"
+            logging.error(error_msg)
+            QMessageBox.warning(self, "错误", error_msg)
+            return set()
+
+        # 【核心修复】检查是否存在"影院名称"列
+        target_column = "影院名称"
+        if target_column not in df.columns:
+            error_msg = f"关键列'{target_column}'未在文件中找到！"
+            logging.error(error_msg)
+            logging.error(f"文件中的列名: {list(df.columns)}")
+            QMessageBox.warning(self, "错误", f"未找到'{target_column}'列\n\n文件中的列名: {list(df.columns)}\n\n请确保Excel文件包含名为'{target_column}'的列")
+            return set()
+
+        # 使用指定列名提取数据
+        try:
+            cinema_names_list = df[target_column].dropna().astype(str).tolist()
+            logging.info(f"从'{target_column}'列提取到 {len(cinema_names_list)} 条原始数据")
+
+        except Exception as e:
+            error_msg = f"提取'{target_column}'列数据失败: {e}"
+            logging.error(error_msg)
+            QMessageBox.warning(self, "错误", error_msg)
+            return set()
+
+        # 清理和去重数据
+        cinema_names = set()
+        for name in cinema_names_list:
+            cleaned_name = str(name).strip()
+            if cleaned_name and cleaned_name != 'nan':  # 排除空值和NaN
+                cinema_names.add(cleaned_name)
+
+        if not cinema_names:
+            error_msg = f"'{target_column}'列中未找到有效的影院名称"
+            logging.error(error_msg)
+            QMessageBox.warning(self, "错误", error_msg)
+            return set()
+
+        # 【验证日志】打印前5个成功提取的影院名称
+        sample_names = list(cinema_names)[:5]
+        logging.info(f"✅ 成功从文件中提取到 {len(cinema_names)} 个有效影院名称")
+        logging.info(f"📋 前5个影院名称示例: {sample_names}")
+
+        return cinema_names
 
     def delete_selected_rule(self):
         """删除选中的规则"""

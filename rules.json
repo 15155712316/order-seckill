@@ -281,5 +281,41 @@
       },
       "min_bid_price": 0.0
     }
+  },
+  {
+    "rule_id": "c8765032-fce6-436d-a538-37ea6ee4a112",
+    "rule_name": "白名单测试1",
+    "enabled": true,
+    "match_conditions": {
+      "match_mode": "whitelist",
+      "city": ""
+    },
+    "hall_logic": {
+      "mode": "ALL",
+      "hall_list": [],
+      "cost": 0.0
+    },
+    "profit_logic": {
+      "min_profit_threshold": 0.0
+    },
+    "filter_logic": {
+      "ticket_counts": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ],
+      "price_range": {
+        "min": 50.0,
+        "max": 200.0
+      },
+      "min_bid_price": 0.0
+    }
   }
 ]
