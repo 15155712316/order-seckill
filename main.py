@@ -8,7 +8,7 @@
 import sys
 import logging
 from PyQt6.QtWidgets import QApplication
-from ui.main_window_new import MainWindow
+from ui.main_window import MainWindow
 from config import LOG_LEVEL, LOG_FILE, LOG_FORMAT, APP_NAME
 
 # 配置全局日志系统
@@ -17,7 +17,7 @@ logging.basicConfig(
     format=LOG_FORMAT,
     handlers=[
         logging.FileHandler(LOG_FILE, encoding='utf-8'),  # 输出到文件
-        logging.StreamHandler()  # 输出到控制台
+        logging.StreamHandler()  # 输出到控制台333
     ]
 )
 
