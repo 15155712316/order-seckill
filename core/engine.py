@@ -11,6 +11,89 @@ from typing import Dict, List, Any, Optional, Set
 from .database import DatabaseManager
 
 
+class WhitelistPolicy:
+    """白名单策略类 - 处理基于影院白名单的订单匹配"""
+
+    def __init__(self, rule_data: Dict, cinema_set: Set[str]):
+        """
+        初始化白名单策略
+
+        Args:
+            rule_data (Dict): 规则数据
+            cinema_set (Set[str]): 影院名称集合
+        """
+        self.rule_data = rule_data
+        self.cinema_set = cinema_set
+        self.filters = rule_data.get('filter_logic', {})
+
+    def check(self, order: Dict) -> Optional[Dict]:
+        """
+        【v1.3 最终版】白名单策略的核心匹配逻辑
+
+        Args:
+            order (Dict): 订单数据
+
+        Returns:
+            Optional[Dict]: 匹配成功返回结果字典，失败返回None
+        """
+        # a. 首先，检查订单的影院名称是否在该策略的白名单集合中
+        order_cinema_name = order.get('cinema_name', '').lower().strip()
+        cinema_matched = False
+
+        for whitelist_cinema in self.cinema_set:
+            whitelist_cinema_lower = whitelist_cinema.lower().strip()
+            if (whitelist_cinema_lower in order_cinema_name or
+                order_cinema_name in whitelist_cinema_lower):
+                cinema_matched = True
+                break
+
+        if not cinema_matched:
+            return None  # 影院不在白名单中
+
+        # b. 从该策略的高级筛选规则中获取用户设置
+        ticket_counts = self.filters.get('ticket_counts', [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+        price_range = self.filters.get('price_range', {'min': 0, 'max': 999})
+        min_bid_price = self.filters.get('min_bid_price', 0)
+
+        # c. 逐一进行校验
+        order_seat_count = order.get('seat_count', 1)
+        order_original_price = order.get('original_price', 0)
+        order_bidding_price = order.get('bidding_price', 0)
+
+        # 检查票数
+        if order_seat_count not in ticket_counts:
+            return None
+
+        # 检查原价范围
+        if not (price_range['min'] <= order_original_price <= price_range['max']):
+            return None
+
+        # 检查最低竞标价
+        if order_bidding_price < min_bid_price:
+            return None
+
+        # d. 所有条件都满足，计算利润并返回匹配结果
+        hall_logic = self.rule_data.get('hall_logic', {})
+        profit_logic = self.rule_data.get('profit_logic', {})
+
+        hall_cost = hall_logic.get('cost', 0)
+        single_ticket_profit = order_bidding_price - hall_cost
+        total_profit = single_ticket_profit * order_seat_count
+        min_profit_threshold = profit_logic.get('min_profit_threshold', 0)
+
+        # 判断总利润是否达标
+        if total_profit >= min_profit_threshold:
+            return {
+                'total_profit': total_profit,
+                'seat_count': order_seat_count,
+                'rule_name': self.rule_data.get('rule_name', '未命名规则'),
+                'order_details': order.copy(),
+                'strategy_type': 'whitelist'  # 标识策略类型
+            }
+
+        return None
+
+
 class RuleEngine:
     """规则引擎类 - 负责加载和处理抢单决策规则"""
 
@@ -118,21 +201,16 @@ class RuleEngine:
             match_mode = match_conditions.get('match_mode', 'keywords')
 
             if match_mode == 'whitelist':
-                # 白名单策略：检查影院是否在白名单中
+                # 白名单策略：使用WhitelistPolicy类处理
                 policy_id = rule.get('rule_id')
                 if policy_id and policy_id in self.whitelist_cache:
                     whitelist_cinemas = self.whitelist_cache[policy_id]
-                    # 检查订单影院是否在白名单中（支持部分匹配）
-                    cinema_matched = False
-                    for whitelist_cinema in whitelist_cinemas:
-                        whitelist_cinema_lower = whitelist_cinema.lower().strip()
-                        if (whitelist_cinema_lower in order_cinema_name or
-                            order_cinema_name in whitelist_cinema_lower):
-                            cinema_matched = True
-                            break
-
-                    if not cinema_matched:
-                        continue  # 影院不在白名单中，跳到下一条规则
+                    whitelist_policy = WhitelistPolicy(rule, whitelist_cinemas)
+                    result = whitelist_policy.check(order)
+                    if result:
+                        return result  # 白名单策略匹配成功，直接返回结果
+                    else:
+                        continue  # 白名单策略不匹配，跳到下一条规则
                 else:
                     continue  # 白名单策略但没有加载到影院数据，跳过
             else:

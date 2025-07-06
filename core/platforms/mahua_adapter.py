@@ -146,7 +146,16 @@ class MahuaAdapter(BaseAdapter):
                 except (ValueError, TypeError):
                     logging.warning(f"麻花平台订单 {order_id} 的座位数字段转换失败，使用默认值1")
                     seat_count = 1
-                
+
+                # 安全地转换original_price字段 - 从 salePrice 获取
+                original_price = 0.0
+                try:
+                    price_value = order.get('salePrice', 0.0)
+                    original_price = float(price_value) if price_value else 0.0
+                except (ValueError, TypeError):
+                    logging.warning(f"麻花平台订单 {order_id} 的salePrice字段转换失败，使用默认值0.0")
+                    original_price = 0.0
+
                 # 提取字符串字段（根据麻花平台官方文档字段映射）
                 city = order.get('movieCityName', '')
                 cinema_name = order.get('movieCinemaName', '')
@@ -166,6 +175,7 @@ class MahuaAdapter(BaseAdapter):
                     'order_id': order_id,
                     'bidding_price': bidding_price,
                     'seat_count': seat_count,
+                    'original_price': original_price,
                     'city': city,
                     'cinema_name': cinema_name,
                     'hall_type': hall_type,

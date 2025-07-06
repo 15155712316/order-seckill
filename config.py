@@ -64,3 +64,4 @@ RULES_FILE = "rules.json"
 # 语音提醒配置
 TTS_CACHE_DIR = "tts_cache"  # 语音缓存文件夹
 ALERT_TEXT_TEMPLATE = "{platform}有{profit}元利润订单"  # 语音播报的文本模板
+WHITELIST_ALERT_TEXT = "白名单影院来单"  # 白名单策略专用提醒文本

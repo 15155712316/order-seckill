@@ -734,10 +734,18 @@ class MainWindow(QMainWindow):
             platform_name = opportunity_data.get('platform', '未知')
             total_profit = opportunity_data.get('total_profit', 0)
 
-            # 语音播报新机会
+            # 【v1.3 最终版】语音播报新机会 - 支持白名单策略专用提醒
             try:
-                alert_text = ALERT_TEXT_TEMPLATE.format(platform=platform_name, profit=round(total_profit))
-                self.tts_player.play(alert_text)
+                # 检查是否为白名单策略
+                strategy_type = opportunity_data.get('strategy_type', 'keywords')
+
+                if strategy_type == 'whitelist':
+                    # 白名单策略使用专用提醒音频
+                    self.tts_player.play_alert(alert_type='whitelist')
+                else:
+                    # 关键词策略使用原有的模板提醒
+                    alert_text = ALERT_TEXT_TEMPLATE.format(platform=platform_name, profit=round(total_profit))
+                    self.tts_player.play(alert_text)
             except Exception as e:
                 logging.error(f"语音播报失败: {e}")
 

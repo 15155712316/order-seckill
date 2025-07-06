@@ -10,7 +10,7 @@ import hashlib
 import threading
 from gtts import gTTS
 from playsound import playsound
-from config import TTS_CACHE_DIR
+from config import TTS_CACHE_DIR, WHITELIST_ALERT_TEXT
 
 
 class TTSPlayer:
@@ -135,6 +135,48 @@ class TTSPlayer:
         except Exception as e:
             logging.error(f"语音播放过程中发生错误: {e}")
             # 确保任何错误都不会影响主程序运行
+
+    def play_alert(self, alert_type='default'):
+        """
+        【v1.3 最终版】播放特定类型的提醒音频
+
+        Args:
+            alert_type (str): 提醒类型，'default' 或 'whitelist'
+        """
+        try:
+            if alert_type == 'whitelist':
+                # 白名单策略专用提醒
+                fixed_filename = "whitelist_alert.mp3"
+                filepath = os.path.join(self.cache_dir, fixed_filename)
+
+                # 检查固定文件是否存在
+                if os.path.exists(filepath):
+                    logging.info(f"使用缓存的白名单提醒音频: {filepath}")
+                    # 在后台线程中播放
+                    threading.Thread(
+                        target=self._play_audio_file,
+                        args=(filepath,),
+                        daemon=True
+                    ).start()
+                else:
+                    logging.info(f"白名单提醒音频不存在，正在生成: {WHITELIST_ALERT_TEXT}")
+
+                    # 生成白名单专用提醒音频
+                    if self._generate_tts_file(WHITELIST_ALERT_TEXT, filepath):
+                        # 生成成功后播放
+                        threading.Thread(
+                            target=self._play_audio_file,
+                            args=(filepath,),
+                            daemon=True
+                        ).start()
+                    else:
+                        logging.error("白名单提醒音频生成失败")
+            else:
+                # 默认提醒（保持原有逻辑兼容性）
+                logging.warning("play_alert调用了默认类型，建议使用具体的alert_type")
+
+        except Exception as e:
+            logging.error(f"播放提醒音频时发生错误: {e}")
     
     def clear_cache(self):
         """清空语音缓存"""
