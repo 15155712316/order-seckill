@@ -317,5 +317,25 @@
       },
       "min_bid_price": 0.0
     }
+  },
+  {
+    "rule_id": "53ec5365-e959-4744-9fa3-7804cdd286ed",
+    "rule_name": "333",
+    "enabled": true,
+    "match_conditions": {
+      "match_mode": "keywords",
+      "city": "",
+      "cinema_keywords": [
+        "333"
+      ]
+    },
+    "hall_logic": {
+      "mode": "INCLUDE",
+      "hall_list": [],
+      "cost": 11.0
+    },
+    "profit_logic": {
+      "min_profit_threshold": 111.0
+    }
   }
 ]

@@ -302,18 +302,38 @@ class MainWindow(QMainWindow):
         return left_widget
 
     def create_right_panel(self):
-        """创建右侧面板"""
+        """【v1.3 Bug修复】创建右侧面板 - 支持多策略类型编辑"""
         right_widget = QWidget()
-        form_layout = QFormLayout()
+        main_layout = QVBoxLayout()
 
         # 用户引导标签
         self.guide_label = QLabel("请从左侧选择规则进行编辑，或点击'新增规则'。")
         self.guide_label.setStyleSheet("color: gray; font-style: italic; padding: 20px; text-align: center;")
         self.guide_label.setWordWrap(True)
-        form_layout.addRow("", self.guide_label)
+        main_layout.addWidget(self.guide_label)
 
-        # 创建表单控件容器
-        self.form_container = QWidget()
+        # 创建编辑器堆叠窗口部件
+        self.editor_stacked_widget = QStackedWidget()
+
+        # 创建关键词策略编辑卡片（索引0）
+        self.keyword_card = self.create_keyword_strategy_card()
+        self.editor_stacked_widget.addWidget(self.keyword_card)
+
+        # 创建白名单策略编辑卡片（索引1）
+        self.whitelist_card = self.create_whitelist_strategy_card()
+        self.editor_stacked_widget.addWidget(self.whitelist_card)
+
+        main_layout.addWidget(self.editor_stacked_widget)
+
+        # 默认隐藏堆叠窗口部件
+        self.editor_stacked_widget.hide()
+
+        right_widget.setLayout(main_layout)
+        return right_widget
+
+    def create_keyword_strategy_card(self):
+        """创建关键词策略编辑卡片"""
+        card_widget = QWidget()
         form_container_layout = QFormLayout()
 
         # 规则名称
@@ -374,27 +394,47 @@ class MainWindow(QMainWindow):
         self.checkbox_enabled.setChecked(True)
         form_container_layout.addRow("", self.checkbox_enabled)
 
-        # 设置表单容器布局
-        self.form_container.setLayout(form_container_layout)
+        # 设置卡片布局
+        card_widget.setLayout(form_container_layout)
+        return card_widget
 
-        # 将表单容器添加到主布局
-        form_layout.addRow("", self.form_container)
+    def create_whitelist_strategy_card(self):
+        """创建白名单策略编辑卡片"""
+        card_widget = QWidget()
+        form_container_layout = QFormLayout()
 
-        # 初始状态：显示引导标签，隐藏表单容器
-        self.guide_label.show()
-        self.form_container.hide()
+        # 白名单策略的表单字段
+        self.edit_whitelist_rule_name = QLineEdit()
+        form_container_layout.addRow("规则名称:", self.edit_whitelist_rule_name)
 
-        right_widget.setLayout(form_layout)
-        return right_widget
+        self.edit_whitelist_city = QLineEdit()
+        form_container_layout.addRow("城市（可选）:", self.edit_whitelist_city)
+
+        # 白名单管理
+        whitelist_label = QLabel("白名单管理：请使用新版UI导入Excel文件")
+        whitelist_label.setStyleSheet("color: blue; font-weight: bold;")
+        form_container_layout.addRow("", whitelist_label)
+
+        # 启用此规则
+        self.checkbox_whitelist_enabled = QCheckBox("启用此规则")
+        self.checkbox_whitelist_enabled.setChecked(True)
+        form_container_layout.addRow("", self.checkbox_whitelist_enabled)
+
+        # 设置卡片布局
+        card_widget.setLayout(form_container_layout)
+        return card_widget
 
     def add_new_rule(self):
-        """添加新规则"""
+        """【v1.3 Bug修复】添加新规则 - 默认使用关键词策略"""
         try:
-            # 隐藏引导标签，显示表单容器
+            # 隐藏引导标签，显示编辑器
             self.guide_label.hide()
-            self.form_container.show()
+            self.editor_stacked_widget.show()
 
-            # 清空右侧表单，准备输入新规则
+            # 默认切换到关键词策略卡片（索引0）
+            self.editor_stacked_widget.setCurrentIndex(0)
+
+            # 清空关键词策略表单，准备输入新规则
             self.edit_rule_name.clear()
             self.edit_city.clear()
             self.edit_cinema_keywords.clear()
@@ -417,14 +457,19 @@ class MainWindow(QMainWindow):
             logging.error(f"添加新规则时出错: {e}")
 
     def delete_selected_rule(self):
-        """删除选中的规则"""
+        """【v1.3 Bug修复】删除选中的规则 - 使用索引直接删除"""
         try:
-            current_item = self.rule_list.currentItem()
-            if current_item is None:
+            # a. 获取当前在QListWidget中被选中的行号索引
+            current_row = self.rule_list.currentRow()
+
+            # b. 检查current_row是否有效（不等于-1）
+            if current_row == -1:
                 self.statusBar().showMessage("请先选择要删除的规则")
                 return
 
-            rule_name = current_item.text()
+            # 获取规则名称用于确认对话框
+            current_item = self.rule_list.currentItem()
+            rule_name = current_item.text() if current_item else f"规则{current_row + 1}"
 
             # 弹出确认对话框
             reply = QMessageBox.question(
@@ -439,15 +484,18 @@ class MainWindow(QMainWindow):
             if reply != QMessageBox.StandardButton.Yes:
                 return
 
-            # 从内存中删除规则
-            self.engine.rules = [rule for rule in self.engine.rules
-                               if rule.get('rule_name') != rule_name]
+            # c. 如果有效，直接使用这个索引从self.engine.rules列表中移除对应的策略对象
+            if 0 <= current_row < len(self.engine.rules):
+                del self.engine.rules[current_row]
+            else:
+                self.statusBar().showMessage("删除失败：索引超出范围")
+                return
 
-            # 保存到文件并刷新UI
+            # d. 调用保存和刷新UI的方法
             self.save_rules_to_file()
             self.load_rules_to_editor()
 
-            logging.info(f"规则 '{rule_name}' 已被删除")
+            logging.info(f"规则 '{rule_name}' 已被删除（索引: {current_row}）")
             self.statusBar().showMessage(f"规则 '{rule_name}' 已删除")
 
         except Exception as e:
@@ -636,36 +684,64 @@ class MainWindow(QMainWindow):
             logging.error(f"加载规则到编辑器时出错: {e}")
 
     def display_rule_details(self, current_item):
-        """显示规则详情"""
+        """【v1.3 Bug修复】显示规则详情 - 支持策略类型卡片切换"""
         if current_item is None:
-            # 显示引导标签，隐藏表单容器
+            # 显示引导标签，隐藏编辑器
             self.guide_label.show()
-            self.form_container.hide()
+            self.editor_stacked_widget.hide()
             return
 
         try:
-            # 隐藏引导标签，显示表单容器
-            self.guide_label.hide()
-            self.form_container.show()
+            # a. 获取当前选中的行号索引
+            current_row = self.rule_list.currentRow()
 
-            rule_name = current_item.text()
-
-            # 在规则列表中找到对应的规则
-            selected_rule = None
-            for rule in self.engine.rules:
-                if rule.get('rule_name') == rule_name:
-                    selected_rule = rule
-                    break
-
-            if selected_rule is None:
-                logging.warning(f"未找到规则: {rule_name}")
+            if current_row == -1 or current_row >= len(self.engine.rules):
+                logging.warning(f"无效的行号索引: {current_row}")
                 return
 
-            # 填充表单数据
-            self.edit_rule_name.setText(selected_rule.get('rule_name', ''))
+            # b. 根据索引从self.engine.rules列表中获取完整的策略对象
+            policy = self.engine.rules[current_row]
+
+            # c. 核心的卡片切换逻辑
+            match_conditions = policy.get('match_conditions', {})
+            match_mode = match_conditions.get('match_mode', 'keywords')
+
+            # 隐藏引导标签，显示编辑器
+            self.guide_label.hide()
+            self.editor_stacked_widget.show()
+
+            if match_mode == 'whitelist':
+                # i. 白名单策略 - 切换到索引1
+                self.editor_stacked_widget.setCurrentIndex(1)
+                logging.info(f"切换到白名单编辑卡片（索引1）")
+            elif match_mode == 'keywords' or match_mode == 'keyword':
+                # ii. 关键词策略 - 切换到索引0
+                self.editor_stacked_widget.setCurrentIndex(0)
+                logging.info(f"切换到关键词编辑卡片（索引0）")
+            else:
+                # 默认使用关键词策略卡片
+                self.editor_stacked_widget.setCurrentIndex(0)
+                logging.warning(f"未知的策略类型: {match_mode}，使用默认关键词卡片")
+
+            # d. 将policy中的数据填充到对应表单的逻辑
+            if match_mode == 'whitelist':
+                self.fill_whitelist_form(policy)
+            else:
+                self.fill_keyword_form(policy)
+
+            logging.debug(f"已显示规则详情: {policy.get('rule_name', '未命名')}")
+
+        except Exception as e:
+            logging.error(f"显示规则详情时出错: {e}")
+
+    def fill_keyword_form(self, policy):
+        """填充关键词策略表单"""
+        try:
+            # 规则名称
+            self.edit_rule_name.setText(policy.get('rule_name', ''))
 
             # 匹配条件
-            match_conditions = selected_rule.get('match_conditions', {})
+            match_conditions = policy.get('match_conditions', {})
             self.edit_city.setText(match_conditions.get('city', ''))
 
             # 影院关键词（列表转字符串）
@@ -673,7 +749,7 @@ class MainWindow(QMainWindow):
             self.edit_cinema_keywords.setText(','.join(keywords))
 
             # 影厅逻辑
-            hall_logic = selected_rule.get('hall_logic', {})
+            hall_logic = policy.get('hall_logic', {})
             mode = hall_logic.get('mode', 'INCLUDE').upper()
 
             # 设置单选按钮
@@ -693,18 +769,33 @@ class MainWindow(QMainWindow):
             self.edit_cost.setText(str(cost))
 
             # 最低利润
-            profit_logic = selected_rule.get('profit_logic', {})
+            profit_logic = policy.get('profit_logic', {})
             min_profit = profit_logic.get('min_profit_threshold', 0)
             self.edit_min_profit.setText(str(min_profit))
 
             # 启用状态
-            enabled = selected_rule.get('enabled', True)
+            enabled = policy.get('enabled', True)
             self.checkbox_enabled.setChecked(enabled)
 
-            logging.debug(f"已显示规则详情: {rule_name}")
+        except Exception as e:
+            logging.error(f"填充关键词表单时出错: {e}")
+
+    def fill_whitelist_form(self, policy):
+        """填充白名单策略表单"""
+        try:
+            # 规则名称
+            self.edit_whitelist_rule_name.setText(policy.get('rule_name', ''))
+
+            # 匹配条件
+            match_conditions = policy.get('match_conditions', {})
+            self.edit_whitelist_city.setText(match_conditions.get('city', ''))
+
+            # 启用状态
+            enabled = policy.get('enabled', True)
+            self.checkbox_whitelist_enabled.setChecked(enabled)
 
         except Exception as e:
-            logging.error(f"显示规则详情时出错: {e}")
+            logging.error(f"填充白名单表单时出错: {e}")
 
     def init_worker_thread(self):
         """初始化后台工作线程"""
