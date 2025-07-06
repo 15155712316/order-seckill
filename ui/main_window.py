@@ -26,7 +26,7 @@ from core.engine import RuleEngine
 from core.platforms.haha_adapter import HahaAdapter
 from core.platforms.mahua_adapter import MahuaAdapter
 from core.audio import TTSPlayer
-from config import RULES_FILE, API_REQUEST_INTERVAL, ALERT_TEXT_TEMPLATE, HAHA_PLATFORM_NAME, MAHUA_PLATFORM_NAME
+from config import RULES_FILE, API_REQUEST_INTERVAL, HAHA_PLATFORM_NAME, MAHUA_PLATFORM_NAME
 
 
 class Worker(QObject):
@@ -849,32 +849,73 @@ class MainWindow(QMainWindow):
         self.worker.cycle_finished.connect(self.update_status_bar)
 
         # 启动线程
-        self.thread.start()
+        self.thread.start()     
 
         # 更新状态栏
         self.statusBar().showMessage("后台监控已启动，等待抢单机会...")
 
     def add_opportunity_to_table(self, opportunity_data):
         """槽函数：接收抢单机会数据并添加到表格中"""
+
+        # 【第一步：完整的语音处理模块】
         try:
-            # 提取平台和利润信息用于语音播报
+            # 日志记录，方便未来调试
+            logging.info("MainWindow收到新机会，准备调用语音模块...")
+
+            # 声明空的alert_text字符串变量，用于存放最终要播报的文本
+            alert_text = ""
+
+            # 从传入的opportunity_data字典中获取type字段的值
+            opportunity_type = opportunity_data.get('type', opportunity_data.get('strategy_type', 'unknown'))
+
+            # 【第二步：实现差异化的文本生成逻辑】
+            if opportunity_type == 'whitelist':
+                # 白名单策略的播报逻辑
+                platform = opportunity_data.get('platform', '未知平台')
+                alert_text = f"{platform}，白名单订单来了"
+
+            elif opportunity_type == 'keyword' or opportunity_type == 'keywords':
+                # 关键词策略的播报逻辑
+                platform = opportunity_data.get('platform', '未知平台')
+                profit = opportunity_data.get('total_profit')
+
+                # 对profit字段进行检查，确保它存在且不为None
+                if profit is not None:
+                    try:
+                        # 安全地将profit转换为格式化的字符串（保留两位小数）
+                        profit_str = f"{float(profit):.2f}"
+                        alert_text = f"{profit_str}元利润，{platform}平台来单了"
+                    except (ValueError, TypeError):
+                        # 如果转换失败，使用"未知利润"作为后备
+                        logging.warning(f"利润字段转换失败，原值: {profit}")
+                        alert_text = f"未知利润，{platform}平台来单了"
+                else:
+                    # profit字段不存在，提供不包含利润的保底播报文本
+                    alert_text = f"{platform}平台来单了"
+
+            else:
+                # 未知的策略类型，提供通用的播报文本
+                platform = opportunity_data.get('platform', '未知平台')
+                alert_text = f"{platform}平台有新订单"
+                logging.warning(f"未知的策略类型: {opportunity_type}，使用通用播报文本")
+
+            # 【第三步：执行语音播报】
+            if alert_text:
+                logging.info(f"最终生成的播报文本: {alert_text}")
+                self.tts_player.play(alert_text)
+            else:
+                logging.warning("播报文本为空，跳过语音播报")
+
+        except Exception as e:
+            # 记录任何可能发生的未知异常
+            logging.error(f"语音处理模块发生未知异常: {e}")
+
+        # 【第四步：确认UI更新逻辑】
+        # 以下是原有的UI表格更新代码
+        try:
+            # 提取平台和利润信息用于UI显示
             platform_name = opportunity_data.get('platform', '未知')
             total_profit = opportunity_data.get('total_profit', 0)
-
-            # 【v1.3 最终版】语音播报新机会 - 支持白名单策略专用提醒
-            try:
-                # 检查是否为白名单策略
-                strategy_type = opportunity_data.get('strategy_type', 'keywords')
-
-                if strategy_type == 'whitelist':
-                    # 白名单策略使用专用提醒音频
-                    self.tts_player.play_alert(alert_type='whitelist')
-                else:
-                    # 关键词策略使用原有的模板提醒
-                    alert_text = ALERT_TEXT_TEMPLATE.format(platform=platform_name, profit=round(total_profit))
-                    self.tts_player.play(alert_text)
-            except Exception as e:
-                logging.error(f"语音播报失败: {e}")
 
             # 在表格顶部插入新行
             self.table.insertRow(0)
