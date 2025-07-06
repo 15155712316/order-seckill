@@ -71,7 +71,7 @@ class DatabaseManager:
             self.connection.row_factory = sqlite3.Row  # 使查询结果可以像字典一样访问
             
             # 创建数据表
-            self._create_table()
+            self._create_tables()
             
             logging.info(f"数据库管理器初始化完成，数据库文件: {self.db_path}")
             
@@ -79,8 +79,8 @@ class DatabaseManager:
             logging.error(f"数据库初始化失败: {e}")
             raise
     
-    def _create_table(self):
-        """创建订单数据表和白名单表"""
+    def _create_tables(self):
+        """【中央仓储架构】创建所有数据表：订单表、白名单表、策略表"""
         try:
             cursor = self.connection.cursor()
 
@@ -116,6 +116,21 @@ class DatabaseManager:
 
             cursor.execute(create_whitelist_table_sql)
 
+            # 【核心新增】创建策略表 - 取代rules.json的中央仓储
+            create_policies_table_sql = """
+            CREATE TABLE IF NOT EXISTS policies (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                type TEXT NOT NULL,
+                policy_order INTEGER NOT NULL,
+                config TEXT NOT NULL,
+                is_enabled INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP NOT NULL
+            )
+            """
+
+            cursor.execute(create_policies_table_sql)
+
             # 创建索引以提高查询性能
             index_sqls = [
                 # orders表索引
@@ -125,7 +140,11 @@ class DatabaseManager:
                 "CREATE INDEX IF NOT EXISTS idx_city ON orders(city)",
                 # whitelist_cinemas表索引
                 "CREATE INDEX IF NOT EXISTS idx_policy_id ON whitelist_cinemas(policy_id)",
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_cinema ON whitelist_cinemas(policy_id, cinema_name)"
+                "CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_cinema ON whitelist_cinemas(policy_id, cinema_name)",
+                # 【新增】policies表索引
+                "CREATE INDEX IF NOT EXISTS idx_policy_order ON policies(policy_order)",
+                "CREATE INDEX IF NOT EXISTS idx_policy_type ON policies(type)",
+                "CREATE INDEX IF NOT EXISTS idx_policy_enabled ON policies(is_enabled)"
             ]
 
             for index_sql in index_sqls:
@@ -449,6 +468,168 @@ class DatabaseManager:
         except Exception as e:
             logging.error(f"获取白名单统计失败: {e}")
             return {}
+
+    # ========================================
+    # 【中央仓储架构】策略管理核心方法
+    # ========================================
+
+    def load_all_policies(self) -> List[Dict[str, Any]]:
+        """
+        【核心方法】从数据库加载所有策略，按policy_order升序排序
+
+        Returns:
+            List[Dict[str, Any]]: 策略字典列表，config字段已从JSON字符串解析为字典
+        """
+        try:
+            cursor = self.connection.cursor()
+
+            query_sql = """
+            SELECT id, name, type, policy_order, config, is_enabled, created_at
+            FROM policies
+            ORDER BY policy_order ASC
+            """
+
+            cursor.execute(query_sql)
+            rows = cursor.fetchall()
+
+            policies = []
+            for row in rows:
+                policy = {
+                    'rule_id': row[0],  # 保持与现有代码兼容
+                    'rule_name': row[1],  # 保持与现有代码兼容
+                    'type': row[2],
+                    'policy_order': row[3],
+                    'enabled': bool(row[5]),  # 保持与现有代码兼容
+                    'created_at': row[6]
+                }
+
+                # 解析config JSON字符串为字典
+                try:
+                    config = json.loads(row[4])
+                    policy.update(config)  # 将config内容合并到策略字典中
+                except json.JSONDecodeError as e:
+                    logging.error(f"策略 {row[0]} 的config JSON解析失败: {e}")
+                    continue
+
+                policies.append(policy)
+
+            logging.info(f"从数据库加载了 {len(policies)} 条策略")
+            return policies
+
+        except Exception as e:
+            logging.error(f"加载策略失败: {e}")
+            return []
+
+    def save_policy(self, policy: Dict[str, Any]) -> bool:
+        """
+        【核心方法】保存或更新单个策略到数据库
+
+        Args:
+            policy (Dict[str, Any]): 策略字典
+
+        Returns:
+            bool: 是否保存成功
+        """
+        try:
+            cursor = self.connection.cursor()
+
+            # 提取基本字段
+            policy_id = policy.get('rule_id')
+            policy_name = policy.get('rule_name', '未命名策略')
+            policy_type = policy.get('match_conditions', {}).get('match_mode', 'keywords')
+            policy_order = policy.get('policy_order', 999)  # 默认排序值
+            is_enabled = 1 if policy.get('enabled', True) else 0
+
+            # 构建config字典（排除基本字段）
+            config = policy.copy()
+            excluded_fields = ['rule_id', 'rule_name', 'type', 'policy_order', 'enabled', 'created_at']
+            for field in excluded_fields:
+                config.pop(field, None)
+
+            # 将config转换为JSON字符串
+            config_json = json.dumps(config, ensure_ascii=False, indent=2)
+
+            # 使用INSERT OR REPLACE INTO逻辑
+            insert_sql = """
+            INSERT OR REPLACE INTO policies
+            (id, name, type, policy_order, config, is_enabled, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """
+
+            # 如果是新策略，使用当前时间；如果是更新，保持原创建时间
+            created_at = policy.get('created_at', get_china_time())
+
+            cursor.execute(insert_sql, (
+                policy_id, policy_name, policy_type, policy_order,
+                config_json, is_enabled, created_at
+            ))
+
+            self.connection.commit()
+            logging.info(f"策略 '{policy_name}' (ID: {policy_id}) 保存成功")
+            return True
+
+        except Exception as e:
+            logging.error(f"保存策略失败: {e}")
+            return False
+
+    def delete_policy(self, policy_id: str) -> bool:
+        """
+        【核心方法】根据policy_id删除策略
+
+        Args:
+            policy_id (str): 策略ID
+
+        Returns:
+            bool: 是否删除成功
+        """
+        try:
+            cursor = self.connection.cursor()
+
+            # 删除策略
+            delete_sql = "DELETE FROM policies WHERE id = ?"
+            cursor.execute(delete_sql, (policy_id,))
+
+            deleted_count = cursor.rowcount
+            self.connection.commit()
+
+            if deleted_count > 0:
+                logging.info(f"策略 {policy_id} 删除成功")
+                return True
+            else:
+                logging.warning(f"策略 {policy_id} 不存在，无法删除")
+                return False
+
+        except Exception as e:
+            logging.error(f"删除策略 {policy_id} 失败: {e}")
+            return False
+
+    def update_policies_order(self, policies: List[Dict[str, Any]]) -> bool:
+        """
+        【可选方法】批量更新策略的policy_order字段
+
+        Args:
+            policies (List[Dict[str, Any]]): 包含rule_id和policy_order的策略列表
+
+        Returns:
+            bool: 是否更新成功
+        """
+        try:
+            cursor = self.connection.cursor()
+
+            update_sql = "UPDATE policies SET policy_order = ? WHERE id = ?"
+
+            for i, policy in enumerate(policies):
+                policy_id = policy.get('rule_id')
+                new_order = i + 1  # 从1开始排序
+                cursor.execute(update_sql, (new_order, policy_id))
+
+            self.connection.commit()
+            logging.info(f"批量更新了 {len(policies)} 个策略的排序")
+            return True
+
+        except Exception as e:
+            logging.error(f"批量更新策略排序失败: {e}")
+            return False
 
     def close(self):
         """关闭数据库连接"""

@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-规则引擎模块 - 负责加载和处理抢单决策规则
-支持关键词策略和白名单策略两种模式
+【中央仓储架构】规则引擎模块 - 状态广播系统
+负责加载和处理抢单决策规则，支持关键词策略和白名单策略两种模式
+实现单向数据流和状态驱动的UI刷新机制
 """
 
 import json
 import logging
+import uuid
 from typing import Dict, List, Any, Optional, Set
+from PyQt6.QtCore import QObject, pyqtSignal
 from .database import DatabaseManager
 
 
@@ -94,66 +97,73 @@ class WhitelistPolicy:
         return None
 
 
-class RuleEngine:
-    """规则引擎类 - 负责加载和处理抢单决策规则"""
+class RuleEngine(QObject):
+    """【中央仓储架构】规则引擎类 - 状态广播系统的核心
 
-    def __init__(self, rules_filepath: str, db_manager: DatabaseManager = None):
+    作为应用程序的"真理来源"，负责：
+    1. 从数据库加载和管理所有策略数据
+    2. 在数据状态变更时向整个系统广播
+    3. 提供统一的策略操作接口
+    """
+
+    # 【核心信号】策略数据更新时发射，驱动UI刷新
+    policies_updated = pyqtSignal()
+
+    def __init__(self, rules_filepath: str = None, db_manager: DatabaseManager = None):
         """
         初始化规则引擎
 
         Args:
-            rules_filepath (str): rules.json文件的路径
+            rules_filepath (str): 已废弃，保留用于兼容性
             db_manager (DatabaseManager): 数据库管理器实例
         """
-        self.filepath = rules_filepath
+        super().__init__()  # 初始化QObject
+
+        self.filepath = rules_filepath  # 保留用于兼容性，实际不再使用
         self.rules = []  # 存储加载后的所有规则
         self.db_manager = db_manager or DatabaseManager()  # 数据库管理器
         self.whitelist_cache = {}  # 白名单策略的影院缓存 {policy_id: set}
-        self._load_rules()  # 加载和预处理规则
+        self._load_policies()  # 从数据库加载策略
 
-    def _load_rules(self):
+    def _load_policies(self):
         """
-        内部方法：加载并预处理规则文件
+        【中央仓储架构】从数据库加载并预处理策略数据
         """
         try:
-            # 尝试打开并读取JSON文件
-            with open(self.filepath, 'r', encoding='utf-8') as file:
-                rules_data = json.load(file)
+            # 从数据库加载所有策略
+            policies_data = self.db_manager.load_all_policies()
 
-            # 遍历每条规则进行预处理
-            processed_rules = []
-            for rule in rules_data:
-                # 创建规则的副本以避免修改原始数据
-                processed_rule = rule.copy()
+            # 遍历每条策略进行预处理
+            processed_policies = []
+            for policy in policies_data:
+                # 创建策略的副本以避免修改原始数据
+                processed_policy = policy.copy()
 
                 # 预处理：将hall_list转换为hall_set以提高查找性能
-                if 'hall_logic' in processed_rule and 'hall_list' in processed_rule['hall_logic']:
-                    hall_list = processed_rule['hall_logic']['hall_list']
-                    processed_rule['hall_logic']['hall_set'] = set(hall_list)
+                if 'hall_logic' in processed_policy and 'hall_list' in processed_policy['hall_logic']:
+                    hall_list = processed_policy['hall_logic']['hall_list']
+                    processed_policy['hall_logic']['hall_set'] = set(hall_list)
 
                 # 如果是白名单策略，从数据库加载影院名单
-                match_conditions = processed_rule.get('match_conditions', {})
+                match_conditions = processed_policy.get('match_conditions', {})
                 if match_conditions.get('match_mode') == 'whitelist':
-                    policy_id = processed_rule.get('rule_id')
+                    policy_id = processed_policy.get('rule_id')
                     if policy_id:
                         cinema_set = self.db_manager.load_cinemas_for_policy(policy_id)
                         self.whitelist_cache[policy_id] = cinema_set
                         logging.info(f"为白名单策略 {policy_id} 加载了 {len(cinema_set)} 个影院")
 
-                processed_rules.append(processed_rule)
+                processed_policies.append(processed_policy)
 
-            # 将预处理后的规则赋值给实例变量
-            self.rules = processed_rules
-            logging.info(f"成功加载 {len(self.rules)} 条规则")
+            # 将预处理后的策略赋值给实例变量
+            self.rules = processed_policies
+            logging.info(f"从数据库成功加载 {len(self.rules)} 条策略")
 
-        except FileNotFoundError:
-            logging.error(f"错误：找不到规则文件 {self.filepath}")
-            self.rules = []
-        except json.JSONDecodeError as e:
-            logging.error(f"错误：规则文件JSON格式错误 - {e}")
-            self.rules = []
+            # 发射策略更新信号
+            self.policies_updated.emit()
+
         except Exception as e:
-            logging.error(f"错误：加载规则文件时发生未知错误 - {e}")
+            logging.error(f"错误：从数据库加载策略时发生错误 - {e}")
             self.rules = []
 
     def check_order(self, order):
@@ -174,9 +184,9 @@ class RuleEngine:
         """
         # 遍历所有规则
         for rule in self.rules:
-            # 前置检查：跳过被禁用的规则
-            if not rule.get('enabled', True):
-                continue
+            # 【安全机制】第一道关卡：检查策略是否被启用
+            if not rule.get('enabled', False):
+                continue  # 如果未启用，则立即跳过，检查下一个策略
 
             # 数据准备与清洗：安全获取订单字段并转换为小写
             order_city = order.get('city', '').lower().strip()
@@ -338,26 +348,151 @@ class RuleEngine:
         except Exception as e:
             logging.error(f"重新加载白名单策略失败: {e}")
 
-    def save_rules(self, rules_data: List[Dict]) -> bool:
+    # ========================================
+    # 【中央仓储架构】策略操作接口
+    # ========================================
+
+    def add_new_policy(self, policy: Dict[str, Any]) -> bool:
         """
-        保存规则到文件
+        【核心方法】添加新策略
 
         Args:
-            rules_data (List[Dict]): 规则数据列表
+            policy (Dict[str, Any]): 策略字典
 
         Returns:
-            bool: 保存是否成功
+            bool: 是否添加成功
         """
         try:
-            with open(self.filepath, 'w', encoding='utf-8') as file:
-                json.dump(rules_data, file, ensure_ascii=False, indent=2)
+            # 确保策略有唯一ID
+            if 'rule_id' not in policy:
+                policy['rule_id'] = str(uuid.uuid4())
 
-            # 重新加载规则
-            self._load_rules()
+            # 设置排序值（添加到末尾）
+            policy['policy_order'] = len(self.rules) + 1
 
-            logging.info(f"成功保存 {len(rules_data)} 条规则")
-            return True
+            # 保存到数据库
+            success = self.db_manager.save_policy(policy)
+            if success:
+                # 更新内存
+                self.rules.append(policy)
+
+                # 如果是白名单策略，初始化缓存
+                match_conditions = policy.get('match_conditions', {})
+                if match_conditions.get('match_mode') == 'whitelist':
+                    policy_id = policy.get('rule_id')
+                    if policy_id:
+                        self.whitelist_cache[policy_id] = set()
+
+                # 发射更新信号
+                self.policies_updated.emit()
+                logging.info(f"成功添加新策略: {policy.get('rule_name', '未命名')}")
+                return True
+            else:
+                logging.error("添加策略失败：数据库保存失败")
+                return False
 
         except Exception as e:
-            logging.error(f"保存规则失败: {e}")
+            logging.error(f"添加策略失败: {e}")
+            return False
+
+    def save_policy_changes(self, policy: Dict[str, Any]) -> bool:
+        """
+        【核心方法】保存策略修改
+
+        Args:
+            policy (Dict[str, Any]): 修改后的策略字典
+
+        Returns:
+            bool: 是否保存成功
+        """
+        try:
+            # 保存到数据库
+            success = self.db_manager.save_policy(policy)
+            if success:
+                # 更新内存中的策略
+                policy_id = policy.get('rule_id')
+                for i, existing_policy in enumerate(self.rules):
+                    if existing_policy.get('rule_id') == policy_id:
+                        self.rules[i] = policy
+                        break
+
+                # 如果是白名单策略，更新缓存
+                match_conditions = policy.get('match_conditions', {})
+                if match_conditions.get('match_mode') == 'whitelist':
+                    if policy_id:
+                        # 重新加载白名单缓存
+                        cinema_set = self.db_manager.load_cinemas_for_policy(policy_id)
+                        self.whitelist_cache[policy_id] = cinema_set
+
+                # 发射更新信号
+                self.policies_updated.emit()
+                logging.info(f"成功保存策略修改: {policy.get('rule_name', '未命名')}")
+                return True
+            else:
+                logging.error("保存策略修改失败：数据库保存失败")
+                return False
+
+        except Exception as e:
+            logging.error(f"保存策略修改失败: {e}")
+            return False
+
+    def delete_policy(self, policy_id: str, index: int) -> bool:
+        """
+        【核心方法】删除策略
+
+        Args:
+            policy_id (str): 策略ID
+            index (int): 策略在列表中的索引
+
+        Returns:
+            bool: 是否删除成功
+        """
+        try:
+            # 获取要删除的策略信息
+            if 0 <= index < len(self.rules):
+                policy_to_delete = self.rules[index]
+            else:
+                logging.error(f"删除策略失败：索引 {index} 超出范围")
+                return False
+
+            # 如果是白名单策略，清理关联数据
+            match_conditions = policy_to_delete.get('match_conditions', {})
+            if match_conditions.get('match_mode') == 'whitelist':
+                deleted_count = self.db_manager.clear_cinemas_for_policy(policy_id)
+                logging.info(f"清理了策略 {policy_id} 的 {deleted_count} 个关联影院")
+
+                # 清理缓存
+                self.whitelist_cache.pop(policy_id, None)
+
+            # 从数据库删除策略
+            success = self.db_manager.delete_policy(policy_id)
+            if success:
+                # 从内存中删除
+                del self.rules[index]
+
+                # 发射更新信号
+                self.policies_updated.emit()
+                logging.info(f"成功删除策略: {policy_to_delete.get('rule_name', '未命名')}")
+                return True
+            else:
+                logging.error("删除策略失败：数据库删除失败")
+                return False
+
+        except Exception as e:
+            logging.error(f"删除策略失败: {e}")
+            return False
+
+    def reload_policies(self) -> bool:
+        """
+        【辅助方法】重新加载所有策略
+
+        Returns:
+            bool: 是否重新加载成功
+        """
+        try:
+            self._load_policies()
+            logging.info("策略重新加载完成")
+            return True
+        except Exception as e:
+            logging.error(f"重新加载策略失败: {e}")
             return False
