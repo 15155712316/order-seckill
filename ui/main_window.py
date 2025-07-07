@@ -200,9 +200,9 @@ class MainWindow(QMainWindow):
             "平台", "利润", "票数", "规则名称", "城市", "影院", "影厅"
         ])
 
-        # 设置表格属性
-        self.opportunities_table.setAlternatingRowColors(True)
-        self.opportunities_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        # 设置表格属性 - 移除高亮效果
+        self.opportunities_table.setAlternatingRowColors(False)  # 禁用交替行颜色
+        self.opportunities_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)  # 禁用行选择
 
         # 创建布局
         monitoring_layout = QVBoxLayout()
@@ -1269,10 +1269,12 @@ class MainWindow(QMainWindow):
                 alert_text = f"{platform}平台有新订单"
                 logging.warning(f"未知的策略类型: {opportunity_type}，使用通用播报文本")
 
-            # 【第三步：执行语音播报】
+            # 【第三步：执行优化的语音播报】
             if alert_text:
                 logging.info(f"最终生成的播报文本: {alert_text}")
-                self.tts_player.play(alert_text)
+                # 传递策略类型和平台信息，启用优化缓存
+                platform = opportunity_data.get('platform', '未知平台')
+                self.tts_player.play(alert_text, strategy_type=opportunity_type, platform=platform)
             else:
                 logging.warning("播报文本为空，跳过语音播报")
 
