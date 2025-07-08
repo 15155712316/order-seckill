@@ -31,7 +31,7 @@ class WhitelistPolicy:
 
     def check(self, order: Dict) -> Optional[Dict]:
         """
-        【v1.3 最终版】白名单策略的核心匹配逻辑
+        【v2.4 时空策略版】白名单策略的核心匹配逻辑
 
         Args:
             order (Dict): 订单数据
@@ -39,7 +39,29 @@ class WhitelistPolicy:
         Returns:
             Optional[Dict]: 匹配成功返回结果字典，失败返回None
         """
-        # a. 首先，检查订单的影院名称是否在该策略的白名单集合中
+        # 第一关：影片检查
+        match_conditions = self.rule_data.get('match_conditions', {})
+        target_movie_keywords = match_conditions.get('target_movie_keywords', [])
+
+        if target_movie_keywords:  # 如果设置了影片过滤
+            order_movie_name = order.get('movie_name', '')
+            if not order_movie_name:
+                return None  # 没有影片名称信息，不匹配
+
+            # 执行"OR"逻辑匹配：任何一个关键词被包含即可
+            movie_matched = False
+            order_movie_lower = order_movie_name.lower().strip()
+
+            for keyword in target_movie_keywords:
+                keyword_lower = keyword.lower().strip()
+                if keyword_lower in order_movie_lower:
+                    movie_matched = True
+                    break
+
+            if not movie_matched:
+                return None  # 影片不匹配，不符合条件
+
+        # 第二关：检查订单的影院名称是否在该策略的白名单集合中
         order_cinema_name = order.get('cinema_name', '').lower().strip()
         cinema_matched = False
 
@@ -53,7 +75,7 @@ class WhitelistPolicy:
         if not cinema_matched:
             return None  # 影院不在白名单中
 
-        # b. 从该策略的高级筛选规则中获取用户设置
+        # 第三关：从该策略的高级筛选规则中获取用户设置
         ticket_counts = self.filters.get('ticket_counts', [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
         price_range = self.filters.get('price_range', {'min': 0, 'max': 999})
         min_bid_price = self.filters.get('min_bid_price', 0)
@@ -224,7 +246,30 @@ class RuleEngine(QObject):
                 else:
                     continue  # 白名单策略但没有加载到影院数据，跳过
             else:
-                # 关键词策略：检查所有关键词是否都出现在影院名称中
+                # 关键词策略：首先进行周几过滤检查
+                filter_logic = rule.get('filter_logic', {})
+                allowed_weekdays = filter_logic.get('allowed_weekdays', [])
+
+                # 如果设置了周几过滤且不是全选（7天）
+                if allowed_weekdays and len(allowed_weekdays) < 7:
+                    # 获取订单的放映时间
+                    show_timestamp = order.get('show_timestamp')
+                    if not show_timestamp:
+                        continue  # 没有放映时间信息，跳过此订单
+
+                    try:
+                        from datetime import datetime
+                        # 解析时间字符串并获取周几（0=周一，6=周日）
+                        show_datetime = datetime.strptime(show_timestamp, "%Y-%m-%d %H:%M:%S")
+                        weekday = show_datetime.weekday()
+
+                        if weekday not in allowed_weekdays:
+                            continue  # 周几不匹配，跳到下一条规则
+                    except ValueError as e:
+                        logging.error(f"解析订单放映时间失败: {show_timestamp}, 错误: {e}")
+                        continue  # 时间解析失败，跳过此订单
+
+                # 检查所有关键词是否都出现在影院名称中
                 cinema_keywords = match_conditions.get('cinema_keywords', [])
                 if cinema_keywords:
                     keywords_matched = True

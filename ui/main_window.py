@@ -394,6 +394,21 @@ class MainWindow(QMainWindow):
         self.edit_min_profit.setPlaceholderText("例如：8.0")
         form_layout.addRow("最低利润:", self.edit_min_profit)
 
+        # 【新增】周几过滤控件
+        weekday_widget = QWidget()
+        weekday_layout = QHBoxLayout()
+
+        self.weekday_checkboxes = []
+        weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+
+        for weekday_name in weekday_names:
+            checkbox = QCheckBox(weekday_name)
+            self.weekday_checkboxes.append(checkbox)
+            weekday_layout.addWidget(checkbox)
+
+        weekday_widget.setLayout(weekday_layout)
+        form_layout.addRow("放映日过滤:", weekday_widget)
+
         # 【安全机制】启用此规则 - 默认不启用
         self.checkbox_enabled = QCheckBox("启用此策略")
         self.checkbox_enabled.setChecked(False)
@@ -415,6 +430,16 @@ class MainWindow(QMainWindow):
         self.edit_whitelist_city = QLineEdit()
         self.edit_whitelist_city.setPlaceholderText("留空表示不限制城市")
         form_layout.addRow("城市（可选）:", self.edit_whitelist_city)
+
+        # 【新增】影片过滤控件
+        self.edit_target_movies = QLineEdit()
+        self.edit_target_movies.setPlaceholderText("如：阿凡达,流浪地球")
+        form_layout.addRow("指定影片:", self.edit_target_movies)
+
+        # 影片过滤提示标签
+        movie_hint_label = QLabel("（可选，输入影片关键字，包含即匹配，多个可用逗号分割）")
+        movie_hint_label.setStyleSheet("color: gray; font-size: 12px;")
+        form_layout.addRow("", movie_hint_label)
 
         # 白名单管理组
         whitelist_group = QGroupBox("影院白名单")
@@ -532,7 +557,8 @@ class MainWindow(QMainWindow):
                 'filter_logic': {
                     'ticket_counts': [],  # 【安全机制】默认不选择任何票数
                     'price_range': {'min': 0, 'max': 200},
-                    'min_bid_price': 0
+                    'min_bid_price': 0,
+                    'allowed_weekdays': [0, 1, 2, 3, 4, 5, 6]  # 【新增】默认全选所有周天
                 }
             }
 
@@ -573,7 +599,8 @@ class MainWindow(QMainWindow):
                 'enabled': False,  # 【安全机制】默认不启用
                 'match_conditions': {
                     'match_mode': 'whitelist',
-                    'city': ''
+                    'city': '',
+                    'target_movie_keywords': []  # 【新增】影片过滤关键词，默认为空
                 },
                 # 【净化】白名单策略不需要hall_logic和profit_logic
                 'filter_logic': {
@@ -900,6 +927,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'checkbox_ticket_5_plus') and self.checkbox_ticket_5_plus.isChecked():
             ticket_counts.extend(list(range(5, 21)))  # 5张及以上：5到20张
 
+        # 【新增】获取周几过滤选择
+        allowed_weekdays = []
+        for i, checkbox in enumerate(self.weekday_checkboxes):
+            if checkbox.isChecked():
+                allowed_weekdays.append(i)  # 周一为0，周日为6
+
         # 构建策略数据
         rule_id = self.current_rule.get('rule_id') if self.current_rule else str(uuid.uuid4())
 
@@ -926,7 +959,8 @@ class MainWindow(QMainWindow):
                     'min': getattr(self, 'spin_min_price', None).value() if hasattr(self, 'spin_min_price') else 0,
                     'max': getattr(self, 'spin_max_price', None).value() if hasattr(self, 'spin_max_price') else 200
                 },
-                'min_bid_price': getattr(self, 'edit_min_bid', None).value() if hasattr(self, 'edit_min_bid') else 0
+                'min_bid_price': getattr(self, 'edit_min_bid', None).value() if hasattr(self, 'edit_min_bid') else 0,
+                'allowed_weekdays': allowed_weekdays  # 【新增】周几过滤
             }
         }
 
@@ -937,10 +971,18 @@ class MainWindow(QMainWindow):
         # 数据获取与校验
         rule_name = self.edit_whitelist_rule_name.text().strip()
         city = self.edit_whitelist_city.text().strip()
+        target_movies_text = self.edit_target_movies.text().strip()
 
         # 基本校验
         if not rule_name:
             raise ValueError("规则名称不能为空")
+
+        # 【新增】处理影片关键词
+        target_movie_keywords = []
+        if target_movies_text:
+            # 兼容中英文逗号
+            target_movies_text = target_movies_text.replace('，', ',')
+            target_movie_keywords = [kw.strip() for kw in target_movies_text.split(',') if kw.strip()]
 
         # 检查是否已导入影院数据
         if not hasattr(self, 'current_policy_id'):
@@ -956,7 +998,8 @@ class MainWindow(QMainWindow):
             'enabled': self.checkbox_whitelist_enabled.isChecked(),
             'match_conditions': {
                 'match_mode': 'whitelist',
-                'city': city
+                'city': city,
+                'target_movie_keywords': target_movie_keywords  # 【新增】影片过滤关键词
             },
             # 【净化】白名单策略不需要hall_logic和profit_logic
             'filter_logic': {
@@ -1182,6 +1225,14 @@ class MainWindow(QMainWindow):
         profit_logic = rule.get('profit_logic', {})
         self.edit_min_profit.setText(str(profit_logic.get('min_profit_threshold', 0)))
 
+        # 【新增】加载周几过滤设置
+        filter_logic = rule.get('filter_logic', {})
+        allowed_weekdays = filter_logic.get('allowed_weekdays', [0, 1, 2, 3, 4, 5, 6])
+
+        # 根据allowed_weekdays列表设置复选框状态
+        for i, checkbox in enumerate(self.weekday_checkboxes):
+            checkbox.setChecked(i in allowed_weekdays)
+
         self.checkbox_enabled.setChecked(rule.get('enabled', True))
 
     def load_whitelist_rule(self, rule):
@@ -1198,6 +1249,10 @@ class MainWindow(QMainWindow):
 
         match_conditions = rule.get('match_conditions', {})
         self.edit_whitelist_city.setText(match_conditions.get('city', ''))
+
+        # 【新增】加载影片过滤设置
+        target_movie_keywords = match_conditions.get('target_movie_keywords', [])
+        self.edit_target_movies.setText(', '.join(target_movie_keywords))
 
         # 【净化】移除成本价和最低利润的加载，白名单策略不需要这些字段
 
