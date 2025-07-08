@@ -195,9 +195,9 @@ class MainWindow(QMainWindow):
 
         # 创建表格用于显示抢单机会
         self.opportunities_table = QTableWidget()
-        self.opportunities_table.setColumnCount(10)
+        self.opportunities_table.setColumnCount(12)  # 增加2列：影片名称、放映日
         self.opportunities_table.setHorizontalHeaderLabels([
-            "平台", "利润", "票数", "规则", "城市", "影院", "影厅", "原价", "捕捉时间", "操作"
+            "平台", "利润", "票数", "规则", "城市", "影院", "影片名称", "放映日", "影厅", "原价", "捕捉时间", "操作"
         ])
 
         # 设置表格属性 - 移除高亮效果
@@ -1393,7 +1393,47 @@ class MainWindow(QMainWindow):
             from datetime import datetime
             capture_time = datetime.now().strftime("%H:%M:%S")
 
-            # 按新的列顺序填充数据：平台、利润、票数、规则、城市、影院、影厅、原价、捕捉时间
+            # 【新增】处理影片名称
+            movie_name = order.get('movie_name', '未知影片')
+
+            # 【新增】处理放映日
+            weekday_map = {0: '周一', 1: '周二', 2: '周三', 3: '周四', 4: '周五', 5: '周六', 6: '周日'}
+            show_day = "未知"
+
+            # 尝试多个可能的时间字段名
+            show_timestamp = order.get('show_timestamp', order.get('show_time', order.get('timestamp', '')))
+
+            if show_timestamp:
+                try:
+                    # 尝试多种时间格式
+                    time_formats = [
+                        "%Y-%m-%d %H:%M:%S",
+                        "%Y-%m-%d %H:%M",
+                        "%Y/%m/%d %H:%M:%S",
+                        "%Y/%m/%d %H:%M"
+                    ]
+
+                    show_datetime = None
+                    for time_format in time_formats:
+                        try:
+                            show_datetime = datetime.strptime(show_timestamp, time_format)
+                            break
+                        except ValueError:
+                            continue
+
+                    if show_datetime:
+                        weekday = show_datetime.weekday()
+                        show_day = weekday_map.get(weekday, "未知")
+                    else:
+                        # 如果所有格式都失败，记录调试信息
+                        logging.debug(f"无法解析时间格式: {show_timestamp}")
+                        show_day = "未知"
+
+                except Exception as e:
+                    logging.debug(f"解析放映时间失败: {show_timestamp}, 错误: {e}")
+                    show_day = "未知"
+
+            # 按新的列顺序填充数据：平台、利润、票数、规则、城市、影院、影片名称、放映日、影厅、原价、捕捉时间
             items = [
                 opportunity_data['platform'],                    # 平台
                 profit_text,                                     # 利润
@@ -1401,12 +1441,14 @@ class MainWindow(QMainWindow):
                 opportunity_data['rule_name'],                   # 规则
                 order.get('city', ''),                          # 城市
                 order.get('cinema_name', ''),                   # 影院
+                movie_name,                                      # 影片名称（新增）
+                show_day,                                        # 放映日（新增）
                 order.get('hall_type', ''),                     # 影厅
                 f"{order.get('original_price', order.get('bidding_price', 0)):.2f}元",  # 原价
                 capture_time                                     # 捕捉时间
             ]
 
-            # 填充前9列的数据
+            # 填充前11列的数据
             for col, item_text in enumerate(items):
                 item = QTableWidgetItem(str(item_text))
 
@@ -1416,11 +1458,11 @@ class MainWindow(QMainWindow):
 
                 self.opportunities_table.setItem(row_position, col, item)
 
-            # 第10列：添加"复制影院"按钮
+            # 第12列：添加"复制影院"按钮
             cinema_name = order.get('cinema_name', '')
             copy_button = QPushButton("复制影院")
             copy_button.clicked.connect(lambda: self.copy_cinema_name(cinema_name))
-            self.opportunities_table.setCellWidget(row_position, 9, copy_button)  # 第10列（索引9）
+            self.opportunities_table.setCellWidget(row_position, 11, copy_button)  # 第12列（索引11）
 
             # 自动滚动到最新行
             self.opportunities_table.scrollToBottom()

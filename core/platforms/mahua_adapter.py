@@ -162,6 +162,9 @@ class MahuaAdapter(BaseAdapter):
                 hall_type = order.get('movieHallName', '')
                 movie_name = order.get('movieName', '')
 
+                # 【新增】提取时间字段
+                show_time = order.get('showTime', order.get('movieShowTime', order.get('playTime', '')))
+
                 # 数据验证：确保关键字段存在且有效
                 if not cinema_name and not movie_name:
                     logging.warning(f"麻花平台订单 {order_id} 缺少关键信息（影院名和电影名），但仍保留此订单")
@@ -169,7 +172,7 @@ class MahuaAdapter(BaseAdapter):
                 # 验证价格字段的有效性
                 if bidding_price <= 0:
                     logging.debug(f"麻花平台订单 {order_id} 的竞标价格为0或负数: {bidding_price}")
-                
+
                 # 构建标准化订单对象
                 standardized_order = {
                     'order_id': order_id,
@@ -180,6 +183,7 @@ class MahuaAdapter(BaseAdapter):
                     'cinema_name': cinema_name,
                     'hall_type': hall_type,
                     'movie_name': movie_name,
+                    'show_time': show_time,  # 【新增】放映时间
                     # 保留原始数据以备后用
                     'raw_data': order
                 }

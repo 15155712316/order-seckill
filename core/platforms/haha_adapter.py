@@ -316,6 +316,9 @@ class HahaAdapter(BaseAdapter):
                 hall_type = order.get('hallName', '')
                 movie_name = order.get('movieName', '')
 
+                # 【新增】提取时间字段 - 哈哈平台使用'time'字段（格式：2025-07-08 14:10）
+                show_time = order.get('time', order.get('showTime', order.get('show_time', '')))
+
                 # 构建标准化订单对象
                 standardized_order = {
                     'order_id': order_id,
@@ -326,6 +329,7 @@ class HahaAdapter(BaseAdapter):
                     'cinema_name': cinema_name,
                     'hall_type': hall_type,
                     'movie_name': movie_name,
+                    'show_time': show_time,  # 【新增】放映时间
                     # 保留原始数据以备后用
                     'raw_data': order
                 }
