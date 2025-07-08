@@ -204,10 +204,36 @@ class MainWindow(QMainWindow):
         self.opportunities_table.setAlternatingRowColors(False)  # 禁用交替行颜色
         self.opportunities_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)  # 禁用行选择
 
-        # 创建布局
+        # 创建清空按钮
+        self.clear_opportunities_button = QPushButton("清空机会列表")
+        self.clear_opportunities_button.clicked.connect(self.clear_opportunities_table)
+        self.clear_opportunities_button.setStyleSheet("""
+            QPushButton {
+                background-color: #ff6b6b;
+                color: white;
+                border: none;
+                padding: 8px 16px;
+                border-radius: 4px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #ff5252;
+            }
+            QPushButton:pressed {
+                background-color: #e53935;
+            }
+        """)
+
+        # 创建按钮布局
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()  # 添加弹性空间，使按钮右对齐
+        button_layout.addWidget(self.clear_opportunities_button)
+
+        # 创建主布局
         monitoring_layout = QVBoxLayout()
         monitoring_layout.addWidget(QLabel("抢单机会监控:"))
         monitoring_layout.addWidget(self.opportunities_table)
+        monitoring_layout.addLayout(button_layout)  # 添加按钮布局
         self.monitoring_tab.setLayout(monitoring_layout)
 
         # 添加到Tab容器
@@ -1283,24 +1309,49 @@ class MainWindow(QMainWindow):
             logging.error(f"语音处理模块发生未知异常: {e}")
 
         # 【第四步：确保UI更新逻辑的执行】
-        # 以下是原有的UI表格更新代码
+        # 以下是升级后的UI表格更新代码
+        try:
+            self.add_opportunity_to_table(opportunity_data)
+            logging.info(f"发现抢单机会: {opportunity_data['platform']} - {opportunity_data['profit']:.2f}元")
+
+        except Exception as e:
+            logging.error(f"处理抢单机会失败: {e}")
+
+    def add_opportunity_to_table(self, opportunity_data):
+        """添加抢单机会到表格（升级版本）"""
         try:
             # 添加到表格
             row_position = self.opportunities_table.rowCount()
             self.opportunities_table.insertRow(row_position)
 
-            # 填充数据
+            # 获取订单详情
             order = opportunity_data['order']
+            opportunity_type = opportunity_data.get('type', 'keyword')
+
+            # 处理利润显示
+            if opportunity_type == 'whitelist':
+                profit_text = "--"  # 白名单策略显示"--"
+            else:
+                profit_text = f"{opportunity_data['profit']:.2f}元"
+
+            # 获取当前时间
+            from datetime import datetime
+            capture_time = datetime.now().strftime("%H:%M:%S")
+
+            # 按新的列顺序填充数据：平台、利润、票数、规则、城市、影院、影厅、原价、捕捉时间
             items = [
-                opportunity_data['platform'],
-                f"{opportunity_data['profit']:.2f}元",
-                f"{opportunity_data['seat_count']}张",
-                opportunity_data['rule_name'],
-                order.get('city', ''),
-                order.get('cinema_name', ''),
-                order.get('hall_type', '')
+                opportunity_data['platform'],                    # 平台
+                profit_text,                                     # 利润
+                f"{opportunity_data['seat_count']}张",           # 票数
+                opportunity_data['rule_name'],                   # 规则
+                order.get('city', ''),                          # 城市
+                order.get('cinema_name', ''),                   # 影院
+                order.get('hall_type', ''),                     # 影厅
+                f"{order.get('original_price', order.get('bidding_price', 0)):.2f}元",  # 原价
+                capture_time                                     # 捕捉时间
             ]
 
+            # 填充前9列的数据
             for col, item_text in enumerate(items):
                 item = QTableWidgetItem(str(item_text))
 
@@ -1310,16 +1361,54 @@ class MainWindow(QMainWindow):
 
                 self.opportunities_table.setItem(row_position, col, item)
 
+            # 第10列：添加"复制影院"按钮
+            cinema_name = order.get('cinema_name', '')
+            copy_button = QPushButton("复制影院")
+            copy_button.clicked.connect(lambda: self.copy_cinema_name(cinema_name))
+            self.opportunities_table.setCellWidget(row_position, 9, copy_button)  # 第10列（索引9）
+
             # 自动滚动到最新行
             self.opportunities_table.scrollToBottom()
 
             # 调整列宽
             self.opportunities_table.resizeColumnsToContents()
 
-            logging.info(f"发现抢单机会: {opportunity_data['platform']} - {opportunity_data['profit']:.2f}元")
+        except Exception as e:
+            logging.error(f"添加机会到表格失败: {e}")
+
+    def copy_cinema_name(self, cinema_name: str):
+        """复制影院名称到剪贴板"""
+        try:
+            QApplication.clipboard().setText(cinema_name)
+            self.statusBar().showMessage(f"影院名称已复制: {cinema_name}", 3000)  # 显示3秒
+            logging.info(f"影院名称已复制到剪贴板: {cinema_name}")
+        except Exception as e:
+            logging.error(f"复制影院名称失败: {e}")
+            self.statusBar().showMessage("复制失败", 2000)
+
+    def clear_opportunities_table(self):
+        """清空抢单机会列表"""
+        try:
+            # 显示确认对话框
+            reply = QMessageBox.question(
+                self,
+                "确认清空",
+                "您确定要清空所有机会记录吗？\n此操作不可撤销。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+
+            if reply == QMessageBox.StandardButton.Yes:
+                # 清空表格
+                self.opportunities_table.setRowCount(0)
+                self.statusBar().showMessage("机会列表已清空", 2000)
+                logging.info("用户清空了抢单机会列表")
+            else:
+                self.statusBar().showMessage("取消清空操作", 2000)
 
         except Exception as e:
-            logging.error(f"处理抢单机会失败: {e}")
+            logging.error(f"清空机会列表失败: {e}")
+            self.statusBar().showMessage("清空失败", 2000)
 
     def on_status_update(self, status_text):
         """处理状态更新"""
