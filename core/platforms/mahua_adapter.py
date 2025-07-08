@@ -16,11 +16,17 @@ from config import (
     MAHUA_DEV_CODE, MAHUA_SECRET_KEY, MAHUA_CHANNEL_ID,
     MAHUA_LOGIN_URL, MAHUA_ORDER_LIST_URL, MAX_ORDERS_CACHE
 )
+from PyQt6.QtCore import QObject, pyqtSignal
+
+
+class CredentialSignalEmitter(QObject):
+    """凭证失效信号发射器"""
+    platform_credential_expired = pyqtSignal(str)  # 参数为平台名称
 
 
 class MahuaAdapter(BaseAdapter):
     """麻花平台适配器类"""
-    
+
     def __init__(self, name: str):
         """初始化麻花平台适配器"""
         super().__init__(name)
@@ -28,6 +34,14 @@ class MahuaAdapter(BaseAdapter):
         # Token缓存机制
         self.token = None
         self.token_expiry_time = 0
+
+        # 【新增】凭证失效检测
+        self.auth_failure_count = 0  # 连续认证失败次数
+        self.max_auth_failures = 5   # 最大允许的连续认证失败次数
+        self.credential_expired = False  # 凭证是否已失效
+
+        # 【新增】信号发射器
+        self.signal_emitter = CredentialSignalEmitter()
 
         # 用于去重的双端队列，最多保存指定数量的已见过的订单ID
         self.seen_order_ids = collections.deque(maxlen=MAX_ORDERS_CACHE)
@@ -212,6 +226,8 @@ class MahuaAdapter(BaseAdapter):
                 logging.info(f"{self.name}平台Token无效或已过期，正在重新获取...")
                 token = await self._get_token()
                 if not token:
+                    # 【新增】Token获取失败，可能是认证问题
+                    self._handle_auth_failure()
                     return {'name': self.name, 'success': False, 'orders': []}
             
             # 2. 使用有效的Token调用订单列表接口
@@ -273,6 +289,9 @@ class MahuaAdapter(BaseAdapter):
                         # 6. 保存新订单到数据库
                         self.db_manager.save_orders(new_orders, self.name)
 
+                        # 【新增】成功处理数据，重置认证失败计数器
+                        self._reset_auth_failure_count()
+
                         # 7. 返回成功结果
                         return {
                             'name': self.name,
@@ -280,9 +299,40 @@ class MahuaAdapter(BaseAdapter):
                             'orders': new_orders
                         }
                     else:
-                        logging.error(f"❌ {self.name}平台API返回错误: {response_data.get('rtnMsg')}")
+                        error_msg = response_data.get('rtnMsg', '')
+                        logging.error(f"❌ {self.name}平台API返回错误: {error_msg}")
+
+                        # 【新增】检查是否为认证相关错误
+                        if any(keyword in error_msg.lower() for keyword in ['auth', 'token', 'login', 'unauthorized', 'forbidden']):
+                            self._handle_auth_failure()
+
                         return {'name': self.name, 'success': False, 'orders': []}
                         
         except Exception as e:
             logging.error(f"❌ {self.name}平台处理过程中发生错误: {e}")
             return {'name': self.name, 'success': False, 'orders': []}
+
+    def _handle_auth_failure(self):
+        """
+        【新增】处理认证失败
+        连续失败次数达到阈值时发射凭证失效信号
+        """
+        self.auth_failure_count += 1
+        logging.warning(f"{self.name}平台认证失败，连续失败次数: {self.auth_failure_count}/{self.max_auth_failures}")
+
+        if self.auth_failure_count >= self.max_auth_failures and not self.credential_expired:
+            self.credential_expired = True
+            logging.error(f"{self.name}平台凭证已失效，连续失败{self.auth_failure_count}次")
+
+            # 发射凭证失效信号
+            self.signal_emitter.platform_credential_expired.emit(self.name)
+
+    def _reset_auth_failure_count(self):
+        """
+        【新增】重置认证失败计数器
+        成功处理数据时调用
+        """
+        if self.auth_failure_count > 0:
+            logging.info(f"{self.name}平台认证恢复正常，重置失败计数器")
+            self.auth_failure_count = 0
+            self.credential_expired = False

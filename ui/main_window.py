@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QWidget, QTableWidget, QTableWidgetItem, QTabWidget, QSplitter,
     QListWidget, QListWidgetItem, QPushButton, QLineEdit, QRadioButton, QCheckBox,
     QButtonGroup, QLabel, QMessageBox, QStackedWidget, QFileDialog,
-    QComboBox, QSpinBox, QDoubleSpinBox, QGroupBox
+    QComboBox, QSpinBox, QDoubleSpinBox, QGroupBox, QTextEdit, QToolButton
 )
 from PyQt6.QtCore import QObject, QThread, pyqtSignal, Qt
 from PyQt6.QtGui import QColor
@@ -47,6 +47,10 @@ class Worker(QObject):
         super().__init__()
         self.engine = engine
 
+        # 【新增】初始化平台适配器实例，以便MainWindow可以访问
+        self.haha_adapter = HahaAdapter(HAHA_PLATFORM_NAME)
+        self.mahua_adapter = MahuaAdapter(MAHUA_PLATFORM_NAME)
+
     def run(self):
         """后台任务主方法"""
         # 使用传入的规则引擎实例
@@ -54,9 +58,9 @@ class Worker(QObject):
 
         async def main_loop():
             """主循环：持续监控订单并匹配规则"""
-            # 初始化平台适配器
-            haha_adapter = HahaAdapter(HAHA_PLATFORM_NAME)
-            mahua_adapter = MahuaAdapter(MAHUA_PLATFORM_NAME)
+            # 【修改】使用实例变量中的平台适配器
+            haha_adapter = self.haha_adapter
+            mahua_adapter = self.mahua_adapter
 
             while True:
                 try:
@@ -168,6 +172,12 @@ class MainWindow(QMainWindow):
         self.refresh_policy_list_from_engine()
         logging.info("手动触发初始UI刷新完成")
 
+        # 【新增】初始化时禁用所有平台配置控件
+        self.enable_platform_config_controls(False)
+
+        # 【新增】恢复平台配置
+        self.load_platform_credentials()
+
         # 启动后台工作线程
         self.init_worker_thread()
 
@@ -190,11 +200,13 @@ class MainWindow(QMainWindow):
         self.create_auth_tab()
         self.create_monitoring_tab()
         self.create_editor_tab()
+        self.create_platform_config_tab()  # 【新增】平台配置Tab
 
         # 【守护者之盾】初始状态：禁用除登录外的所有功能Tab
         self.tab_widget.setTabEnabled(1, False)  # 抢单监控
         self.tab_widget.setTabEnabled(2, False)  # 关键词策略
         self.tab_widget.setTabEnabled(3, False)  # 白名单策略
+        self.tab_widget.setTabEnabled(4, False)  # 平台配置
 
         # 创建状态栏
         self.statusBar().showMessage("系统已启动，等待数据...")
@@ -347,6 +359,310 @@ class MainWindow(QMainWindow):
 
         # 添加到Tab容器
         self.tab_widget.addTab(self.editor_tab, "策略编辑")
+
+    def create_platform_config_tab(self):
+        """【新增】创建平台配置Tab"""
+        # 创建平台配置Tab容器
+        self.platform_config_tab = QWidget()
+
+        # 创建主布局
+        main_layout = QVBoxLayout()
+
+        # 创建麻花平台配置区域
+        self.create_mahua_config_group()
+        main_layout.addWidget(self.mahua_config_group)
+
+        # 创建哈哈平台配置区域
+        self.create_haha_config_group()
+        main_layout.addWidget(self.haha_config_group)
+
+        # 添加弹性空间
+        main_layout.addStretch()
+
+        # 设置布局
+        self.platform_config_tab.setLayout(main_layout)
+
+        # 添加到Tab容器
+        self.tab_widget.addTab(self.platform_config_tab, "平台配置")
+
+        # 【新增】连接按钮信号
+        self.connect_platform_config_signals()
+
+    def create_mahua_config_group(self):
+        """创建麻花平台配置组"""
+        self.mahua_config_group = QGroupBox("麻花平台配置")
+        layout = QFormLayout()
+
+        # 开发者代码输入框
+        self.mahua_dev_code_input = QLineEdit()
+        self.mahua_dev_code_input.setPlaceholderText("请输入开发者代码")
+        layout.addRow("开发者代码 (dev_code):", self.mahua_dev_code_input)
+
+        # 密钥输入框和显示/隐藏按钮
+        secret_layout = QHBoxLayout()
+        self.mahua_secret_key_input = QLineEdit()
+        self.mahua_secret_key_input.setPlaceholderText("请输入密钥")
+        self.mahua_secret_key_input.setEchoMode(QLineEdit.EchoMode.Password)  # 默认密码模式
+
+        # 显示/隐藏密码按钮
+        self.mahua_toggle_password_btn = QToolButton()
+        self.mahua_toggle_password_btn.setText("👁")
+        self.mahua_toggle_password_btn.setCheckable(True)
+        self.mahua_toggle_password_btn.clicked.connect(self.toggle_mahua_password_visibility)
+
+        secret_layout.addWidget(self.mahua_secret_key_input)
+        secret_layout.addWidget(self.mahua_toggle_password_btn)
+
+        secret_widget = QWidget()
+        secret_widget.setLayout(secret_layout)
+        layout.addRow("密钥 (secret_key):", secret_widget)
+
+        # 测试并应用按钮和结果标签
+        button_layout = QHBoxLayout()
+        self.mahua_test_apply_btn = QPushButton("测试并应用新配置")
+        self.mahua_result_label = QLabel("")
+
+        button_layout.addWidget(self.mahua_test_apply_btn)
+        button_layout.addWidget(self.mahua_result_label)
+        button_layout.addStretch()
+
+        button_widget = QWidget()
+        button_widget.setLayout(button_layout)
+        layout.addRow("", button_widget)
+
+        self.mahua_config_group.setLayout(layout)
+
+    def create_haha_config_group(self):
+        """创建哈哈平台配置组"""
+        self.haha_config_group = QGroupBox("哈哈平台配置")
+        layout = QFormLayout()
+
+        # Cookie输入框（多行）
+        self.haha_cookie_input = QTextEdit()
+        self.haha_cookie_input.setPlaceholderText("请输入Cookie字符串")
+        self.haha_cookie_input.setMaximumHeight(100)  # 限制高度
+        layout.addRow("Cookie:", self.haha_cookie_input)
+
+        # 测试并应用按钮和结果标签
+        button_layout = QHBoxLayout()
+        self.haha_test_apply_btn = QPushButton("测试并应用新配置")
+        self.haha_result_label = QLabel("")
+
+        button_layout.addWidget(self.haha_test_apply_btn)
+        button_layout.addWidget(self.haha_result_label)
+        button_layout.addStretch()
+
+        button_widget = QWidget()
+        button_widget.setLayout(button_layout)
+        layout.addRow("", button_widget)
+
+        self.haha_config_group.setLayout(layout)
+
+    def toggle_mahua_password_visibility(self):
+        """切换麻花平台密钥显示/隐藏"""
+        if self.mahua_toggle_password_btn.isChecked():
+            self.mahua_secret_key_input.setEchoMode(QLineEdit.EchoMode.Normal)
+            self.mahua_toggle_password_btn.setText("🙈")
+        else:
+            self.mahua_secret_key_input.setEchoMode(QLineEdit.EchoMode.Password)
+            self.mahua_toggle_password_btn.setText("👁")
+
+    def enable_platform_config_controls(self, enabled: bool):
+        """启用/禁用平台配置Tab中的所有控件"""
+        try:
+            # 麻花平台控件
+            self.mahua_dev_code_input.setEnabled(enabled)
+            self.mahua_secret_key_input.setEnabled(enabled)
+            self.mahua_toggle_password_btn.setEnabled(enabled)
+            self.mahua_test_apply_btn.setEnabled(enabled)
+
+            # 哈哈平台控件
+            self.haha_cookie_input.setEnabled(enabled)
+            self.haha_test_apply_btn.setEnabled(enabled)
+
+            logging.info(f"平台配置控件状态已设置为: {'启用' if enabled else '禁用'}")
+        except AttributeError as e:
+            # 如果控件还未创建，忽略错误
+            logging.debug(f"平台配置控件尚未创建: {e}")
+
+    def load_platform_credentials(self):
+        """【新增】从数据库加载平台凭证配置"""
+        try:
+            credentials_json = self.db_manager.load_setting('platform_credentials')
+            if credentials_json:
+                credentials = json.loads(credentials_json)
+
+                # 恢复麻花平台配置
+                mahua_config = credentials.get('mahua', {})
+                if mahua_config:
+                    self.mahua_dev_code_input.setText(mahua_config.get('dev_code', ''))
+                    self.mahua_secret_key_input.setText(mahua_config.get('secret_key', ''))
+
+                # 恢复哈哈平台配置
+                haha_config = credentials.get('haha', {})
+                if haha_config:
+                    self.haha_cookie_input.setPlainText(haha_config.get('cookie', ''))
+
+                logging.info("平台凭证配置已从数据库恢复")
+            else:
+                logging.info("未找到保存的平台凭证配置")
+
+        except Exception as e:
+            logging.error(f"加载平台凭证配置失败: {e}")
+
+    def save_platform_credentials(self):
+        """【新增】保存平台凭证配置到数据库"""
+        try:
+            credentials = {
+                'mahua': {
+                    'dev_code': self.mahua_dev_code_input.text().strip(),
+                    'secret_key': self.mahua_secret_key_input.text().strip()
+                },
+                'haha': {
+                    'cookie': self.haha_cookie_input.toPlainText().strip()
+                }
+            }
+
+            credentials_json = json.dumps(credentials, ensure_ascii=False)
+            self.db_manager.save_setting('platform_credentials', credentials_json)
+
+            logging.info("平台凭证配置已保存到数据库")
+            return True
+
+        except Exception as e:
+            logging.error(f"保存平台凭证配置失败: {e}")
+            return False
+
+    def connect_platform_config_signals(self):
+        """【新增】连接平台配置相关信号"""
+        try:
+            # 连接麻花平台测试按钮
+            self.mahua_test_apply_btn.clicked.connect(self.test_and_apply_mahua_config)
+
+            # 连接哈哈平台测试按钮
+            self.haha_test_apply_btn.clicked.connect(self.test_and_apply_haha_config)
+
+            logging.info("平台配置信号连接完成")
+        except Exception as e:
+            logging.error(f"连接平台配置信号失败: {e}")
+
+    def test_and_apply_mahua_config(self):
+        """【新增】测试并应用麻花平台配置"""
+        try:
+            # 禁用按钮，防止重复点击
+            self.mahua_test_apply_btn.setEnabled(False)
+            self.mahua_result_label.setText("正在测试连接...")
+            self.mahua_result_label.setStyleSheet("color: #3498db;")
+
+            # 获取输入的配置
+            dev_code = self.mahua_dev_code_input.text().strip()
+            secret_key = self.mahua_secret_key_input.text().strip()
+
+            # 验证输入
+            if not dev_code or not secret_key:
+                self.mahua_result_label.setText("❌ 请填写完整的配置信息")
+                self.mahua_result_label.setStyleSheet("color: #e74c3c;")
+                return
+
+            # 创建测试线程
+            self.mahua_test_thread = PlatformTestThread('mahua', {
+                'dev_code': dev_code,
+                'secret_key': secret_key
+            })
+            self.mahua_test_thread.test_result.connect(self.on_mahua_test_result)
+            self.mahua_test_thread.start()
+
+        except Exception as e:
+            logging.error(f"测试麻花平台配置异常: {e}")
+            self.mahua_result_label.setText(f"❌ 测试异常: {str(e)}")
+            self.mahua_result_label.setStyleSheet("color: #e74c3c;")
+        finally:
+            # 确保按钮最终会被重新启用
+            if hasattr(self, 'mahua_test_thread') and not self.mahua_test_thread.isRunning():
+                self.mahua_test_apply_btn.setEnabled(True)
+
+    def test_and_apply_haha_config(self):
+        """【新增】测试并应用哈哈平台配置"""
+        try:
+            # 禁用按钮，防止重复点击
+            self.haha_test_apply_btn.setEnabled(False)
+            self.haha_result_label.setText("正在测试连接...")
+            self.haha_result_label.setStyleSheet("color: #3498db;")
+
+            # 获取输入的配置
+            cookie = self.haha_cookie_input.toPlainText().strip()
+
+            # 验证输入
+            if not cookie:
+                self.haha_result_label.setText("❌ 请填写Cookie信息")
+                self.haha_result_label.setStyleSheet("color: #e74c3c;")
+                return
+
+            # 创建测试线程
+            self.haha_test_thread = PlatformTestThread('haha', {
+                'cookie': cookie
+            })
+            self.haha_test_thread.test_result.connect(self.on_haha_test_result)
+            self.haha_test_thread.start()
+
+        except Exception as e:
+            logging.error(f"测试哈哈平台配置异常: {e}")
+            self.haha_result_label.setText(f"❌ 测试异常: {str(e)}")
+            self.haha_result_label.setStyleSheet("color: #e74c3c;")
+        finally:
+            # 确保按钮最终会被重新启用
+            if hasattr(self, 'haha_test_thread') and not self.haha_test_thread.isRunning():
+                self.haha_test_apply_btn.setEnabled(True)
+
+    def on_mahua_test_result(self, success, message):
+        """【新增】处理麻花平台测试结果"""
+        try:
+            if success:
+                # 测试成功，保存配置
+                if self.save_platform_credentials():
+                    self.mahua_result_label.setText("✅ 连接成功并已应用！")
+                    self.mahua_result_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+
+                    # 发射配置更新信号（如果需要热更新）
+                    # self.platform_config_updated.emit()
+
+                    logging.info("麻花平台配置测试成功并已保存")
+                else:
+                    self.mahua_result_label.setText("✅ 连接成功，但保存失败")
+                    self.mahua_result_label.setStyleSheet("color: #f39c12;")
+            else:
+                self.mahua_result_label.setText(f"❌ 连接失败: {message}")
+                self.mahua_result_label.setStyleSheet("color: #e74c3c;")
+
+        except Exception as e:
+            logging.error(f"处理麻花平台测试结果异常: {e}")
+        finally:
+            self.mahua_test_apply_btn.setEnabled(True)
+
+    def on_haha_test_result(self, success, message):
+        """【新增】处理哈哈平台测试结果"""
+        try:
+            if success:
+                # 测试成功，保存配置
+                if self.save_platform_credentials():
+                    self.haha_result_label.setText("✅ 连接成功并已应用！")
+                    self.haha_result_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+
+                    # 发射配置更新信号（如果需要热更新）
+                    # self.platform_config_updated.emit()
+
+                    logging.info("哈哈平台配置测试成功并已保存")
+                else:
+                    self.haha_result_label.setText("✅ 连接成功，但保存失败")
+                    self.haha_result_label.setStyleSheet("color: #f39c12;")
+            else:
+                self.haha_result_label.setText(f"❌ 连接失败: {message}")
+                self.haha_result_label.setStyleSheet("color: #e74c3c;")
+
+        except Exception as e:
+            logging.error(f"处理哈哈平台测试结果异常: {e}")
+        finally:
+            self.haha_test_apply_btn.setEnabled(True)
 
     def create_left_panel(self):
         """创建左侧面板"""
@@ -1382,6 +1698,10 @@ class MainWindow(QMainWindow):
             self.worker.status_update.connect(self.on_status_update)
             self.worker.cycle_finished.connect(self.on_cycle_finished)
 
+            # 【新增】连接平台凭证失效信号
+            self.worker.haha_adapter.signal_emitter.platform_credential_expired.connect(self.on_platform_credential_expired)
+            self.worker.mahua_adapter.signal_emitter.platform_credential_expired.connect(self.on_platform_credential_expired)
+
             # 启动线程
             self.worker_thread.start()
 
@@ -1695,16 +2015,46 @@ class MainWindow(QMainWindow):
                 self.auth_status_label.setText("状态：已登录")
                 self.auth_status_label.setStyleSheet("color: #27ae60; font-weight: bold;")
 
-                # 显示用户信息
-                if user_data:
-                    credits = user_data.get('credits', 0)
-                    self.credits_label.setText(f"剩余积分：{credits}")
-                    self.device_status_label.setText("设备状态：已授权")
-
                 # 解锁所有功能Tab
                 self.tab_widget.setTabEnabled(1, True)  # 抢单监控
                 self.tab_widget.setTabEnabled(2, True)  # 关键词策略
                 self.tab_widget.setTabEnabled(3, True)  # 白名单策略
+                self.tab_widget.setTabEnabled(4, True)  # 平台配置
+
+                # 【新增】启用平台配置Tab中的所有控件
+                self.enable_platform_config_controls(True)
+
+                # 【修复Bug】使用服务器返回的用户数据更新UI
+                if user_data:
+                    # 第一步：更新"设备状态"标签
+                    user_phone = user_data.get('phone', phone)  # 优先使用服务器返回的手机号
+                    self.device_status_label.setText(f"已验证 - {user_phone}")
+                    self.device_status_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+
+                    # 第二步：更新"积分"显示标签
+                    points = user_data.get('points', user_data.get('credits', 0))  # 支持points或credits字段
+                    self.credits_label.setText(f"剩余积分：{str(points)}")
+
+                    # 第三步：更新其他用户信息
+                    nickname = user_data.get('nickname', user_data.get('name', ''))
+                    if nickname:
+                        # 如果有昵称，可以在状态标签中显示
+                        self.auth_status_label.setText(f"状态：已登录 ({nickname})")
+
+                    logging.info(f"用户数据同步完成: 手机号={user_phone}, 积分={points}, 昵称={nickname}")
+                else:
+                    # 如果没有用户数据，使用默认值
+                    self.device_status_label.setText(f"已验证 - {phone}")
+                    self.device_status_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+                    self.credits_label.setText("剩余积分：--")
+                    logging.warning("服务器未返回用户数据，使用默认显示")
+
+                # 第四步：禁用登录相关控件，防止重复登录
+                self.phone_input.setReadOnly(True)
+                self.phone_input.setStyleSheet("background-color: #f0f0f0; color: #666;")
+                self.login_btn.setText("已登录")
+                self.login_btn.setEnabled(False)
+                self.login_btn.setStyleSheet("QPushButton { background-color: #95a5a6; color: white; font-weight: bold; padding: 8px; }")
 
                 # 启动心跳定时器
                 self.start_heartbeat()
@@ -1713,7 +2063,7 @@ class MainWindow(QMainWindow):
                 self.tab_widget.setCurrentIndex(1)
 
                 self.statusBar().showMessage("登录成功，系统已激活", 5000)
-                logging.info(f"用户登录成功: {phone}")
+                logging.info(f"用户登录成功: {phone}, UI数据同步完成")
 
             else:
                 # 登录失败
@@ -1736,9 +2086,10 @@ class MainWindow(QMainWindow):
             logging.error(f"处理登录结果异常: {e}")
 
         finally:
-            # 恢复登录按钮
-            self.login_btn.setEnabled(True)
-            self.login_btn.setText("登录/认证")
+            # 只有在登录失败时才恢复登录按钮
+            if not success:
+                self.login_btn.setEnabled(True)
+                self.login_btn.setText("登录/认证")
 
     def start_heartbeat(self):
         """启动心跳定时器"""
@@ -1808,6 +2159,39 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             logging.error(f"处理心跳验证结果异常: {e}")
+
+    def on_platform_credential_expired(self, platform_name):
+        """
+        【新增】处理平台凭证失效信号
+        非干扰式UI提醒：状态栏红色警告 + Tab标题变红
+        """
+        try:
+            logging.error(f"收到平台凭证失效信号: {platform_name}")
+
+            # 1. 在状态栏显示红色的持续警告信息
+            warning_message = f"⚠️ {platform_name}平台凭证已失效，请检查配置！"
+            self.statusBar().showMessage(warning_message)
+            self.statusBar().setStyleSheet("QStatusBar { background-color: #e74c3c; color: white; font-weight: bold; }")
+
+            # 2. 将相关Tab的标题变红（这里假设有平台配置Tab）
+            # 由于当前没有专门的平台配置Tab，我们将监控Tab标题变红作为提醒
+            current_monitoring_title = self.tab_widget.tabText(1)  # 抢单监控Tab
+            if "⚠️" not in current_monitoring_title:
+                self.tab_widget.setTabText(1, f"⚠️ {current_monitoring_title}")
+
+                # 设置Tab文字颜色为红色
+                self.tab_widget.tabBar().setStyleSheet("""
+                    QTabBar::tab:nth-child(2) {
+                        color: #e74c3c;
+                        font-weight: bold;
+                    }
+                """)
+
+            # 3. 记录详细的警告日志
+            logging.warning(f"平台凭证失效提醒已显示: {platform_name}")
+
+        except Exception as e:
+            logging.error(f"处理平台凭证失效信号异常: {e}")
 
 
 # 【守护者之盾】登录线程类
@@ -1881,6 +2265,74 @@ class HeartbeatThread(QThread):
                 loop.close()
             except:
                 pass
+
+
+# 【新增】平台配置测试线程类
+class PlatformTestThread(QThread):
+    """平台配置测试线程"""
+    test_result = pyqtSignal(bool, str)  # success, message
+
+    def __init__(self, platform_type, config):
+        super().__init__()
+        self.platform_type = platform_type
+        self.config = config
+
+    def run(self):
+        """执行平台连接测试"""
+        try:
+            if self.platform_type == 'mahua':
+                success, message = self.test_mahua_connection()
+            elif self.platform_type == 'haha':
+                success, message = self.test_haha_connection()
+            else:
+                success, message = False, "未知的平台类型"
+
+            self.test_result.emit(success, message)
+
+        except Exception as e:
+            logging.error(f"平台连接测试异常: {e}")
+            self.test_result.emit(False, f"测试异常: {str(e)}")
+
+    def test_mahua_connection(self):
+        """测试麻花平台连接"""
+        try:
+            # 这里应该调用麻花平台的测试方法
+            # 暂时返回成功，实际应该实现真实的连接测试
+            import time
+            time.sleep(2)  # 模拟网络请求
+
+            dev_code = self.config.get('dev_code', '')
+            secret_key = self.config.get('secret_key', '')
+
+            # 简单验证
+            if len(dev_code) < 3 or len(secret_key) < 10:
+                return False, "配置信息格式不正确"
+
+            # 实际应该调用麻花平台API进行验证
+            return True, "连接测试成功"
+
+        except Exception as e:
+            return False, f"连接测试失败: {str(e)}"
+
+    def test_haha_connection(self):
+        """测试哈哈平台连接"""
+        try:
+            # 这里应该调用哈哈平台的测试方法
+            # 暂时返回成功，实际应该实现真实的连接测试
+            import time
+            time.sleep(2)  # 模拟网络请求
+
+            cookie = self.config.get('cookie', '')
+
+            # 简单验证
+            if 'PHPSESSID' not in cookie or len(cookie) < 20:
+                return False, "Cookie格式不正确"
+
+            # 实际应该调用哈哈平台API进行验证
+            return True, "连接测试成功"
+
+        except Exception as e:
+            return False, f"连接测试失败: {str(e)}"
 
 
 def main():

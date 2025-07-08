@@ -15,19 +15,34 @@ from Crypto.Util.Padding import unpad
 from .base_adapter import BaseAdapter
 from ..database import DatabaseManager
 from config import API_URL, API_HEADERS, API_DATA_PAYLOAD, API_TOKEN, MAX_ORDERS_CACHE
+from PyQt6.QtCore import QObject, pyqtSignal
+
+
+class CredentialSignalEmitter(QObject):
+    """凭证失效信号发射器"""
+    platform_credential_expired = pyqtSignal(str)  # 参数为平台名称
 
 
 class HahaAdapter(BaseAdapter):
     """哈哈平台适配器类"""
-    
+
     def __init__(self, name: str):
         """初始化哈哈平台适配器"""
         super().__init__(name)
+
         # 用于去重的双端队列，最多保存指定数量的已见过的订单ID
         self.seen_order_ids = collections.deque(maxlen=MAX_ORDERS_CACHE)
 
         # 初始化数据库管理器
         self.db_manager = DatabaseManager()
+
+        # 【新增】凭证失效检测
+        self.auth_failure_count = 0  # 连续认证失败次数
+        self.max_auth_failures = 5   # 最大允许的连续认证失败次数
+        self.credential_expired = False  # 凭证是否已失效
+
+        # 【新增】信号发射器
+        self.signal_emitter = CredentialSignalEmitter()
 
         logging.info(f"{self.name}平台适配器初始化完成")
     
@@ -58,6 +73,11 @@ class HahaAdapter(BaseAdapter):
                     # 检查HTTP状态码
                     if response.status != 200:
                         logging.error(f"HTTP请求失败，状态码: {response.status}")
+
+                        # 【新增】检查是否为认证相关错误
+                        if response.status in [401, 403]:
+                            self._handle_auth_failure()
+
                         return {
                             'name': self.name,
                             'success': False,
@@ -74,6 +94,12 @@ class HahaAdapter(BaseAdapter):
                     status = api_response.get('status') or api_response.get('code')
                     if status and status != 200:
                         logging.error(f"API返回错误状态: {api_response}")
+
+                        # 【新增】检查是否为认证相关错误
+                        error_msg = api_response.get('message', '').lower()
+                        if any(keyword in error_msg for keyword in ['auth', 'token', 'login', 'unauthorized', 'forbidden']):
+                            self._handle_auth_failure()
+
                         return {
                             'name': self.name,
                             'success': False,
@@ -160,6 +186,9 @@ class HahaAdapter(BaseAdapter):
             logging.debug(f"📋 本次处理了 {len(decrypted_orders)} 条原始订单，过滤后 {len(filtered_orders)} 条，新增 {len(new_orders)} 条")
 
             logging.info(f"成功处理 {len(new_orders)} 个新订单")
+
+            # 【新增】成功处理数据，重置认证失败计数器
+            self._reset_auth_failure_count()
 
             # 返回新的统一格式
             return {
@@ -370,3 +399,28 @@ class HahaAdapter(BaseAdapter):
                 self.seen_order_ids.append(order_id)
         
         return new_orders
+
+    def _handle_auth_failure(self):
+        """
+        【新增】处理认证失败
+        连续失败次数达到阈值时发射凭证失效信号
+        """
+        self.auth_failure_count += 1
+        logging.warning(f"{self.name}平台认证失败，连续失败次数: {self.auth_failure_count}/{self.max_auth_failures}")
+
+        if self.auth_failure_count >= self.max_auth_failures and not self.credential_expired:
+            self.credential_expired = True
+            logging.error(f"{self.name}平台凭证已失效，连续失败{self.auth_failure_count}次")
+
+            # 发射凭证失效信号
+            self.signal_emitter.platform_credential_expired.emit(self.name)
+
+    def _reset_auth_failure_count(self):
+        """
+        【新增】重置认证失败计数器
+        成功处理数据时调用
+        """
+        if self.auth_failure_count > 0:
+            logging.info(f"{self.name}平台认证恢复正常，重置失败计数器")
+            self.auth_failure_count = 0
+            self.credential_expired = False
