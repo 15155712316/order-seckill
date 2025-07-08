@@ -195,9 +195,9 @@ class MainWindow(QMainWindow):
 
         # 创建表格用于显示抢单机会
         self.opportunities_table = QTableWidget()
-        self.opportunities_table.setColumnCount(7)
+        self.opportunities_table.setColumnCount(10)
         self.opportunities_table.setHorizontalHeaderLabels([
-            "平台", "利润", "票数", "规则名称", "城市", "影院", "影厅"
+            "平台", "利润", "票数", "规则", "城市", "影院", "影厅", "原价", "捕捉时间", "操作"
         ])
 
         # 设置表格属性 - 移除高亮效果
