@@ -28,6 +28,7 @@ from core.database import DatabaseManager
 from core.platforms.haha_adapter import HahaAdapter
 from core.platforms.mahua_adapter import MahuaAdapter
 from core.audio import TTSPlayer
+from core.auth import AuthManager, get_user_friendly_message
 from config import RULES_FILE, API_REQUEST_INTERVAL, HAHA_PLATFORM_NAME, MAHUA_PLATFORM_NAME
 
 
@@ -144,6 +145,10 @@ class MainWindow(QMainWindow):
         # 初始化语音播放器
         self.tts_player = TTSPlayer()
 
+        # 【守护者之盾】初始化认证管理器
+        self.auth_manager = AuthManager()
+        self.heartbeat_timer = None
+
         # 当前编辑的规则
         self.current_rule = None
         self.current_strategy_type = None  # 'keywords' 或 'whitelist'
@@ -181,12 +186,89 @@ class MainWindow(QMainWindow):
         central_widget_layout.addWidget(self.tab_widget)
         central_widget.setLayout(central_widget_layout)
 
-        # 创建各个Tab页
+        # 【守护者之盾】创建各个Tab页（用户登录在最前面）
+        self.create_auth_tab()
         self.create_monitoring_tab()
         self.create_editor_tab()
 
+        # 【守护者之盾】初始状态：禁用除登录外的所有功能Tab
+        self.tab_widget.setTabEnabled(1, False)  # 抢单监控
+        self.tab_widget.setTabEnabled(2, False)  # 关键词策略
+        self.tab_widget.setTabEnabled(3, False)  # 白名单策略
+
         # 创建状态栏
         self.statusBar().showMessage("系统已启动，等待数据...")
+
+    def create_auth_tab(self):
+        """【守护者之盾】创建用户登录Tab"""
+        # 创建认证Tab容器
+        self.auth_tab = QWidget()
+
+        # 创建主布局
+        auth_layout = QVBoxLayout()
+
+        # 创建标题
+        title_label = QLabel("守护者之盾 - 用户认证系统")
+        title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #2c3e50; margin: 10px;")
+        auth_layout.addWidget(title_label)
+
+        # 创建表单布局
+        form_layout = QFormLayout()
+
+        # 手机号输入框
+        self.phone_input = QLineEdit()
+        self.phone_input.setPlaceholderText("请输入手机号")
+        self.phone_input.setMaxLength(11)
+        form_layout.addRow("手机号:", self.phone_input)
+
+        # 机器码显示
+        self.machine_code_display = QLineEdit()
+        self.machine_code_display.setReadOnly(True)
+        self.machine_code_display.setText("正在生成机器码...")
+        form_layout.addRow("机器码:", self.machine_code_display)
+
+        # 复制机器码按钮
+        self.copy_machine_code_btn = QPushButton("复制机器码")
+        self.copy_machine_code_btn.clicked.connect(self.copy_machine_code)
+        form_layout.addRow("", self.copy_machine_code_btn)
+
+        # 登录按钮
+        self.login_btn = QPushButton("登录/认证")
+        self.login_btn.clicked.connect(self.on_login_button_clicked)
+        self.login_btn.setStyleSheet("QPushButton { background-color: #3498db; color: white; font-weight: bold; padding: 8px; }")
+        form_layout.addRow("", self.login_btn)
+
+        auth_layout.addLayout(form_layout)
+
+        # 状态显示区域
+        status_group = QGroupBox("认证状态")
+        status_layout = QVBoxLayout()
+
+        self.auth_status_label = QLabel("状态：未登录")
+        self.auth_status_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+        status_layout.addWidget(self.auth_status_label)
+
+        self.credits_label = QLabel("剩余积分：--")
+        status_layout.addWidget(self.credits_label)
+
+        self.device_status_label = QLabel("设备状态：未验证")
+        status_layout.addWidget(self.device_status_label)
+
+        status_group.setLayout(status_layout)
+        auth_layout.addWidget(status_group)
+
+        # 添加弹性空间
+        auth_layout.addStretch()
+
+        # 设置Tab布局
+        self.auth_tab.setLayout(auth_layout)
+        self.tab_widget.addTab(self.auth_tab, "用户登录")
+
+        # 初始化机器码显示
+        self.init_machine_code_display()
+
+        # 加载上次登录的手机号
+        self.load_last_login_phone()
 
     def create_monitoring_tab(self):
         """创建第一个Tab页：抢单监控"""
@@ -1545,6 +1627,260 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logging.error(f"关闭应用程序时发生错误: {e}")
             event.accept()
+
+    # 【守护者之盾】认证相关方法
+    def init_machine_code_display(self):
+        """初始化机器码显示"""
+        try:
+            machine_code = self.auth_manager.get_machine_code()
+            self.machine_code_display.setText(machine_code)
+            logging.info("机器码显示初始化完成")
+        except Exception as e:
+            logging.error(f"机器码显示初始化失败: {e}")
+            self.machine_code_display.setText("机器码生成失败")
+
+    def load_last_login_phone(self):
+        """加载上次登录的手机号"""
+        try:
+            last_phone = self.db_manager.load_setting('last_login_phone', '')
+            if last_phone:
+                self.phone_input.setText(last_phone)
+                logging.info(f"加载上次登录手机号: {last_phone}")
+        except Exception as e:
+            logging.error(f"加载上次登录手机号失败: {e}")
+
+    def copy_machine_code(self):
+        """复制机器码到剪贴板"""
+        try:
+            from PyQt6.QtWidgets import QApplication
+            clipboard = QApplication.clipboard()
+            clipboard.setText(self.machine_code_display.text())
+            self.statusBar().showMessage("机器码已复制到剪贴板", 3000)
+        except Exception as e:
+            logging.error(f"复制机器码失败: {e}")
+
+    def on_login_button_clicked(self):
+        """【守护者之盾】登录按钮点击事件"""
+        try:
+            phone = self.phone_input.text().strip()
+
+            # 验证手机号格式
+            if not phone or len(phone) != 11 or not phone.isdigit():
+                QMessageBox.warning(self, "输入错误", "请输入正确的11位手机号")
+                return
+
+            # 禁用登录按钮
+            self.login_btn.setEnabled(False)
+            self.login_btn.setText("认证中...")
+            self.auth_status_label.setText("状态：认证中...")
+
+            # 创建登录线程
+            self.login_thread = LoginThread(self.auth_manager, phone)
+            self.login_thread.login_result.connect(self.on_login_result)
+            self.login_thread.start()
+
+        except Exception as e:
+            logging.error(f"启动登录过程异常: {e}")
+            QMessageBox.critical(self, "系统错误", f"启动登录过程发生异常: {str(e)}")
+            self.login_btn.setEnabled(True)
+            self.login_btn.setText("登录/认证")
+
+    def on_login_result(self, success, message, user_data):
+        """处理登录结果"""
+        try:
+            if success:
+                # 登录成功
+                phone = self.phone_input.text().strip()
+                self.db_manager.save_setting('last_login_phone', phone)
+                self.auth_status_label.setText("状态：已登录")
+                self.auth_status_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+
+                # 显示用户信息
+                if user_data:
+                    credits = user_data.get('credits', 0)
+                    self.credits_label.setText(f"剩余积分：{credits}")
+                    self.device_status_label.setText("设备状态：已授权")
+
+                # 解锁所有功能Tab
+                self.tab_widget.setTabEnabled(1, True)  # 抢单监控
+                self.tab_widget.setTabEnabled(2, True)  # 关键词策略
+                self.tab_widget.setTabEnabled(3, True)  # 白名单策略
+
+                # 启动心跳定时器
+                self.start_heartbeat()
+
+                # 切换到监控Tab
+                self.tab_widget.setCurrentIndex(1)
+
+                self.statusBar().showMessage("登录成功，系统已激活", 5000)
+                logging.info(f"用户登录成功: {phone}")
+
+            else:
+                # 登录失败
+                friendly_message = get_user_friendly_message(message)
+
+                # 特殊处理设备未授权的情况
+                if message == "Device not authorized":
+                    QMessageBox.critical(
+                        self,
+                        "设备授权失败",
+                        "系统检测到您的硬件发生了变更。为了您的账号安全，请联系管理员进行设备的重新授权。"
+                    )
+                else:
+                    QMessageBox.warning(self, "登录失败", friendly_message)
+
+                self.auth_status_label.setText("状态：登录失败")
+                self.auth_status_label.setStyleSheet("color: #e74c3c; font-weight: bold;")
+
+        except Exception as e:
+            logging.error(f"处理登录结果异常: {e}")
+
+        finally:
+            # 恢复登录按钮
+            self.login_btn.setEnabled(True)
+            self.login_btn.setText("登录/认证")
+
+    def start_heartbeat(self):
+        """启动心跳定时器"""
+        try:
+            from PyQt6.QtCore import QTimer
+
+            if self.heartbeat_timer:
+                self.heartbeat_timer.stop()
+
+            self.heartbeat_timer = QTimer()
+            self.heartbeat_timer.timeout.connect(self.on_heartbeat_timeout)
+            # 设置心跳间隔为4小时
+            self.heartbeat_timer.start(4 * 60 * 60 * 1000)
+
+            logging.info("心跳定时器启动成功")
+
+        except Exception as e:
+            logging.error(f"启动心跳定时器失败: {e}")
+
+    def on_heartbeat_timeout(self):
+        """心跳超时处理"""
+        try:
+            logging.info("执行心跳验证...")
+
+            # 创建心跳验证线程
+            self.heartbeat_thread = HeartbeatThread(self.auth_manager)
+            self.heartbeat_thread.heartbeat_result.connect(self.on_heartbeat_result)
+            self.heartbeat_thread.start()
+
+        except Exception as e:
+            logging.error(f"启动心跳验证异常: {e}")
+
+    def on_heartbeat_result(self, success, message):
+        """处理心跳验证结果"""
+        try:
+            if not success:
+                # 心跳验证失败
+                logging.warning(f"心跳验证失败: {message}")
+
+                # 禁用所有功能Tab
+                self.tab_widget.setTabEnabled(1, False)  # 抢单监控
+                self.tab_widget.setTabEnabled(2, False)  # 关键词策略
+                self.tab_widget.setTabEnabled(3, False)  # 白名单策略
+
+                # 切换到登录Tab
+                self.tab_widget.setCurrentIndex(0)
+
+                # 显示错误对话框
+                friendly_message = get_user_friendly_message(message)
+
+                from PyQt6.QtCore import QTimer
+
+                # 创建模态对话框
+                msg_box = QMessageBox(self)
+                msg_box.setIcon(QMessageBox.Icon.Critical)
+                msg_box.setWindowTitle("会话验证失败")
+                msg_box.setText(f"会话验证失败：{friendly_message}\n\n程序将在5秒后关闭。")
+                msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+
+                # 5秒后自动关闭程序
+                QTimer.singleShot(5000, self.close)
+
+                msg_box.exec()
+
+            else:
+                logging.debug("心跳验证成功")
+
+        except Exception as e:
+            logging.error(f"处理心跳验证结果异常: {e}")
+
+
+# 【守护者之盾】登录线程类
+class LoginThread(QThread):
+    """异步登录线程"""
+    login_result = pyqtSignal(bool, str, object)  # success, message, user_data
+
+    def __init__(self, auth_manager, phone):
+        super().__init__()
+        self.auth_manager = auth_manager
+        self.phone = phone
+
+    def run(self):
+        """执行登录"""
+        try:
+            import asyncio
+
+            # 创建新的事件循环
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            # 执行异步登录
+            success, message, user_data = loop.run_until_complete(
+                self.auth_manager.login(self.phone)
+            )
+
+            # 发送结果信号
+            self.login_result.emit(success, message, user_data)
+
+        except Exception as e:
+            logging.error(f"登录线程异常: {e}")
+            self.login_result.emit(False, f"登录异常: {str(e)}", None)
+        finally:
+            try:
+                loop.close()
+            except:
+                pass
+
+
+# 【守护者之盾】心跳验证线程类
+class HeartbeatThread(QThread):
+    """异步心跳验证线程"""
+    heartbeat_result = pyqtSignal(bool, str)  # success, message
+
+    def __init__(self, auth_manager):
+        super().__init__()
+        self.auth_manager = auth_manager
+
+    def run(self):
+        """执行心跳验证"""
+        try:
+            import asyncio
+
+            # 创建新的事件循环
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            # 执行异步心跳验证
+            success, message = loop.run_until_complete(
+                self.auth_manager.validate_session()
+            )
+
+            # 发送结果信号
+            self.heartbeat_result.emit(success, message)
+
+        except Exception as e:
+            logging.error(f"心跳验证线程异常: {e}")
+            self.heartbeat_result.emit(False, f"验证异常: {str(e)}")
+        finally:
+            try:
+                loop.close()
+            except:
+                pass
 
 
 def main():

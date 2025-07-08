@@ -131,6 +131,16 @@ class DatabaseManager:
 
             cursor.execute(create_policies_table_sql)
 
+            # 【守护者之盾】创建用户设置表
+            create_settings_table_sql = """
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+            """
+
+            cursor.execute(create_settings_table_sql)
+
             # 创建索引以提高查询性能
             index_sqls = [
                 # orders表索引
@@ -630,6 +640,36 @@ class DatabaseManager:
         except Exception as e:
             logging.error(f"批量更新策略排序失败: {e}")
             return False
+
+    def save_setting(self, key: str, value: str):
+        """【守护者之盾】保存或更新用户设置"""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute(
+                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                (key, value)
+            )
+            self.connection.commit()
+            logging.debug(f"保存设置: {key} = {value}")
+        except Exception as e:
+            logging.error(f"保存设置失败: {e}")
+            raise
+
+    def load_setting(self, key: str, default_value: str = None) -> str:
+        """【守护者之盾】加载用户设置"""
+        try:
+            cursor = self.connection.cursor()
+            cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+            result = cursor.fetchone()
+
+            if result:
+                return result[0]
+            else:
+                return default_value
+
+        except Exception as e:
+            logging.error(f"加载设置失败: {e}")
+            return default_value
 
     def close(self):
         """关闭数据库连接"""

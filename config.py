@@ -4,6 +4,14 @@
 配置文件 - 存放敏感和可变的配置信息
 """
 
+# --- 网络与服务器配置 ---
+API_BASE_URL = "http://47.117.162.183:5000"
+NETWORK_CONFIG = {
+    "timeout": 30,         # 请求超时时间（秒）
+    "retry_count": 3,      # 失败重试次数
+    "verify_ssl": False    # 是否验证SSL证书
+}
+
 # --- 麻花平台配置 ---
 MAHUA_DEV_CODE = "b2b4378b42df47518fc3511488d6d555"
 MAHUA_SECRET_KEY = "69eaf6b39da442809644dc2e3e233cf5"
