@@ -14,7 +14,7 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 from .base_adapter import BaseAdapter
 from ..database import DatabaseManager
-from config import API_URL, API_HEADERS, API_DATA_PAYLOAD, API_TOKEN, MAX_ORDERS_CACHE
+from config import MAX_ORDERS_CACHE
 from PyQt6.QtCore import QObject, pyqtSignal
 
 
@@ -26,9 +26,16 @@ class CredentialSignalEmitter(QObject):
 class HahaAdapter(BaseAdapter):
     """哈哈平台适配器类"""
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, config: dict = None):
         """初始化哈哈平台适配器"""
         super().__init__(name)
+
+        # 【V3.5升级】配置注入机制
+        self.config = config or {}
+        self.api_url = self.config.get('api_url', '')
+        self.api_token = self.config.get('token', '')
+        self.api_headers = self.config.get('headers', {})
+        self.api_data_payload = self.config.get('data_payload', {})
 
         # 用于去重的双端队列，最多保存指定数量的已见过的订单ID
         self.seen_order_ids = collections.deque(maxlen=MAX_ORDERS_CACHE)
@@ -38,14 +45,57 @@ class HahaAdapter(BaseAdapter):
 
         # 【新增】凭证失效检测
         self.auth_failure_count = 0  # 连续认证失败次数
-        self.max_auth_failures = 5   # 最大允许的连续认证失败次数
+        self.max_auth_failures = 5   # 最大允许的连证失败次数
         self.credential_expired = False  # 凭证是否已失效
+
+        # 【修复】平台自动停止机制
+        self.is_stopped = False  # 平台是否已停止请求
 
         # 【新增】信号发射器
         self.signal_emitter = CredentialSignalEmitter()
 
         logging.info(f"{self.name}平台适配器初始化完成")
-    
+
+    async def test_credentials(self) -> tuple[bool, str]:
+        """【V3.5新增】测试凭证有效性"""
+        try:
+            if not self.api_url or not self.api_token:
+                return False, "配置信息不完整，请检查API地址和Token"
+
+            # 【修复】使用网络配置进行SSL和超时设置
+            from config import NETWORK_CONFIG
+            import ssl
+
+            # 创建SSL上下文
+            ssl_context = None
+            if not NETWORK_CONFIG.get("verify_ssl", True):
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+
+            # 创建超时配置
+            timeout = aiohttp.ClientTimeout(total=NETWORK_CONFIG.get("timeout", 30))
+
+            # 使用真实API进行测试
+            connector = aiohttp.TCPConnector(ssl=ssl_context)
+            async with aiohttp.ClientSession(
+                headers=self.api_headers,
+                timeout=timeout,
+                connector=connector
+            ) as session:
+                async with session.post(self.api_url, data=self.api_data_payload) as response:
+                    # 以HTTP状态码为第一判断依据
+                    if response.status == 200:
+                        return True, "凭证有效，连接成功！"
+                    elif response.status in [401, 403]:
+                        return False, "凭证无效，请检查Token后重试"
+                    else:
+                        return False, f"连接失败，HTTP状态码: {response.status}"
+
+        except Exception as e:
+            logging.error(f"测试{self.name}平台凭证异常: {e}")
+            return False, f"连接测试异常: {str(e)}"
+
     async def fetch_and_process(self):
         """
         获取并处理哈哈平台的订单数据
@@ -61,11 +111,49 @@ class HahaAdapter(BaseAdapter):
             list: 标准化的订单列表
         """
         try:
-            # 执行真实API请求，严格按照config.py中的配置
-            async with aiohttp.ClientSession(headers=API_HEADERS) as session:
+            # 【修复】检查平台停止状态
+            if self.is_stopped:
+                logging.warning(f"{self.name}平台已停止请求（连续失败{self.auth_failure_count}次）")
+                return {
+                    'name': self.name,
+                    'success': False,
+                    'orders': [],
+                    'stopped': True,
+                    'stop_reason': f'连续认证失败{self.auth_failure_count}次，已自动停止'
+                }
+
+            # 【V3.5升级】使用实例配置进行API请求
+            if not self.api_url or not self.api_token:
+                logging.error(f"{self.name}平台配置不完整，跳过数据获取")
+                return {
+                    'name': self.name,
+                    'success': False,
+                    'orders': []
+                }
+
+            # 【修复】使用网络配置进行SSL和超时设置
+            from config import NETWORK_CONFIG
+            import ssl
+
+            # 创建SSL上下文
+            ssl_context = None
+            if not NETWORK_CONFIG.get("verify_ssl", True):
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+
+            # 创建超时配置
+            timeout = aiohttp.ClientTimeout(total=NETWORK_CONFIG.get("timeout", 30))
+
+            connector = aiohttp.TCPConnector(ssl=ssl_context)
+            async with aiohttp.ClientSession(
+                headers=self.api_headers,
+                timeout=timeout,
+                connector=connector
+            ) as session:
                 logging.info("正在请求哈哈平台API...")
 
-                async with session.post(API_URL, data=API_DATA_PAYLOAD) as response:
+                async with session.post(self.api_url, data=self.api_data_payload) as response:
                     # 获取返回的响应文本
                     response_text = await response.text()
                     logging.info(f"API响应状态码: {response.status}")
@@ -202,6 +290,24 @@ class HahaAdapter(BaseAdapter):
             logging.error(f"错误类型: {type(e).__name__}")
             import traceback
             logging.error(f"错误堆栈: {traceback.format_exc()}")
+
+            # 【修复】检查是否为认证相关错误
+            error_str = str(e).lower()
+            error_type = type(e).__name__.lower()
+
+            # SSL错误、连接错误、认证错误都应该触发失败计数
+            auth_related_errors = [
+                'ssl', 'certificate', 'cert', 'tls',  # SSL相关错误
+                'connection', 'timeout', 'connect',   # 连接相关错误
+                'auth', 'token', 'login', 'unauthorized', 'forbidden',  # 认证相关错误
+                'clientconnectorerror', 'clientosslerror', 'clientconnectortimeouterror'  # aiohttp特定错误
+            ]
+
+            if any(keyword in error_str for keyword in auth_related_errors) or \
+               any(keyword in error_type for keyword in auth_related_errors):
+                logging.warning(f"{self.name}平台遇到认证相关错误，触发失败计数")
+                self._handle_auth_failure()
+
             return {
                 'name': self.name,
                 'success': False,
@@ -252,8 +358,8 @@ class HahaAdapter(BaseAdapter):
             list: 解密后的订单列表，如果解密失败返回空列表
         """
         try:
-            # 调用经过验证的AES解密函数
-            decrypted_json_str = self._aes_decrypt(encrypted_data, API_TOKEN)
+            # 【V3.5升级】使用实例配置中的token
+            decrypted_json_str = self._aes_decrypt(encrypted_data, self.api_token)
 
             if decrypted_json_str is None:
                 logging.error("AES解密失败，返回None")
@@ -410,7 +516,9 @@ class HahaAdapter(BaseAdapter):
 
         if self.auth_failure_count >= self.max_auth_failures and not self.credential_expired:
             self.credential_expired = True
-            logging.error(f"{self.name}平台凭证已失效，连续失败{self.auth_failure_count}次")
+            # 【修复】设置平台停止状态
+            self.is_stopped = True
+            logging.error(f"{self.name}平台凭证已失效，连续失败{self.auth_failure_count}次，已自动停止API请求")
 
             # 发射凭证失效信号
             self.signal_emitter.platform_credential_expired.emit(self.name)
@@ -424,3 +532,5 @@ class HahaAdapter(BaseAdapter):
             logging.info(f"{self.name}平台认证恢复正常，重置失败计数器")
             self.auth_failure_count = 0
             self.credential_expired = False
+            # 【修复】重置停止状态
+            self.is_stopped = False

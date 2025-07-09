@@ -47,9 +47,89 @@ class Worker(QObject):
         super().__init__()
         self.engine = engine
 
-        # 【新增】初始化平台适配器实例，以便MainWindow可以访问
-        self.haha_adapter = HahaAdapter(HAHA_PLATFORM_NAME)
-        self.mahua_adapter = MahuaAdapter(MAHUA_PLATFORM_NAME)
+        # 【V3.5升级】初始化平台适配器实例，使用数据库配置
+        self.init_platform_adapters()
+
+        # 【修复】添加登录状态检查
+        self.is_user_logged_in = False  # 用户登录状态标志
+
+    def init_platform_adapters(self):
+        """【V3.5新增】从数据库加载配置并初始化平台适配器"""
+        try:
+            from core.database import DatabaseManager
+            import json
+
+            db_manager = DatabaseManager()
+            credentials_json = db_manager.load_setting('platform_credentials')
+
+            self.haha_adapter = None
+            self.mahua_adapter = None
+
+            if credentials_json:
+                credentials = json.loads(credentials_json)
+
+                # 初始化哈哈平台适配器
+                haha_config = credentials.get('haha', {})
+                if haha_config.get('token'):
+                    # 【修复】使用真实的哈哈平台API配置，动态构建headers
+                    from config import API_URL, API_HEADERS_TEMPLATE, API_DATA_PAYLOAD
+
+                    # 【修复】动态构建headers，使用用户输入的token
+                    dynamic_headers = API_HEADERS_TEMPLATE.copy()
+                    dynamic_headers['token'] = haha_config['token']
+
+                    haha_full_config = {
+                        'token': haha_config['token'],
+                        'api_url': API_URL,  # 使用config.py中的真实API地址
+                        'headers': dynamic_headers,  # 【修复】使用动态构建的headers
+                        'data_payload': API_DATA_PAYLOAD  # 使用config.py中的真实payload
+                    }
+                    self.haha_adapter = HahaAdapter(HAHA_PLATFORM_NAME, haha_full_config)
+                    logging.info("✅ 哈哈平台适配器已使用数据库配置初始化")
+
+                # 【重构】初始化麻花平台适配器（使用config.py中的真实配置）
+                mahua_config = credentials.get('mahua', {})
+                if mahua_config.get('dev_code') and mahua_config.get('secret_key'):
+                    # 构建完整的麻花平台配置
+                    from config import MAHUA_LOGIN_URL, MAHUA_ORDER_LIST_URL, MAHUA_CHANNEL_ID
+                    mahua_full_config = {
+                        'dev_code': mahua_config['dev_code'],
+                        'secret_key': mahua_config['secret_key'],
+                        'channel_id': MAHUA_CHANNEL_ID,
+                        'login_url': MAHUA_LOGIN_URL,
+                        'order_list_url': MAHUA_ORDER_LIST_URL
+                    }
+
+                    # 【调试】记录Worker实际使用的麻花平台凭证
+                    logging.info("=" * 60)
+                    logging.info("🔍 Worker - 麻花平台适配器初始化")
+                    logging.info("=" * 60)
+                    logging.info(f"📋 Worker使用的麻花平台凭证:")
+                    logging.info(f"  dev_code: '{mahua_full_config['dev_code']}'")
+                    logging.info(f"  secret_key: '{mahua_full_config['secret_key']}'")
+                    logging.info(f"  channel_id: '{mahua_full_config['channel_id']}'")
+                    logging.info(f"  login_url: '{mahua_full_config['login_url']}'")
+                    logging.info(f"  order_list_url: '{mahua_full_config['order_list_url']}'")
+
+                    self.mahua_adapter = MahuaAdapter(MAHUA_PLATFORM_NAME, mahua_full_config)
+                    logging.info("✅ 麻花平台适配器已使用数据库配置初始化")
+
+            # 【重构】记录初始化结果
+            initialized_platforms = []
+            if self.haha_adapter:
+                initialized_platforms.append("哈哈")
+            if self.mahua_adapter:
+                initialized_platforms.append("麻花")
+
+            if initialized_platforms:
+                logging.info(f"🎯 平台适配器初始化完成: {', '.join(initialized_platforms)}")
+            else:
+                logging.info("📋 所有平台均未配置，请前往'平台配置'Tab进行配置")
+
+        except Exception as e:
+            logging.error(f"初始化平台适配器失败: {e}")
+            self.haha_adapter = None
+            self.mahua_adapter = None
 
     def run(self):
         """后台任务主方法"""
@@ -58,28 +138,77 @@ class Worker(QObject):
 
         async def main_loop():
             """主循环：持续监控订单并匹配规则"""
-            # 【修改】使用实例变量中的平台适配器
-            haha_adapter = self.haha_adapter
-            mahua_adapter = self.mahua_adapter
-
             while True:
                 try:
+                    # 【修复】检查用户登录状态
+                    if not self.is_user_logged_in:
+                        self.status_update.emit("⚠️ 请先登录账号以开始监控订单")
+                        await asyncio.sleep(API_REQUEST_INTERVAL)
+                        continue
+
                     # 发送状态更新
                     self.status_update.emit("正在获取订单数据...")
 
+                    # 【V3.5升级】只使用已配置且未停止的平台适配器
+                    tasks = []
+                    platform_names = []
+                    stopped_platforms = []
+
+                    if self.haha_adapter:
+                        if not self.haha_adapter.is_stopped:
+                            tasks.append(self.haha_adapter.fetch_and_process())
+                            platform_names.append(HAHA_PLATFORM_NAME)
+                        else:
+                            stopped_platforms.append(f"{HAHA_PLATFORM_NAME}（连续失败{self.haha_adapter.auth_failure_count}次）")
+
+                    if self.mahua_adapter:
+                        if not self.mahua_adapter.is_stopped:
+                            tasks.append(self.mahua_adapter.fetch_and_process())
+                            platform_names.append(MAHUA_PLATFORM_NAME)
+                        else:
+                            stopped_platforms.append(f"{MAHUA_PLATFORM_NAME}（连续失败{self.mahua_adapter.auth_failure_count}次）")
+
+                    # 【修复】更新状态消息，显示停止的平台信息
+                    if stopped_platforms:
+                        if not tasks:
+                            # 所有平台都已停止
+                            stop_msg = "、".join(stopped_platforms)
+                            self.status_update.emit(f"⚠️ 所有平台已停止：{stop_msg}，请重新配置")
+                            await asyncio.sleep(API_REQUEST_INTERVAL)
+                            continue
+                        else:
+                            # 部分平台停止，部分正常
+                            stop_msg = "、".join(stopped_platforms)
+                            self.status_update.emit(f"正在获取订单数据...（已停止：{stop_msg}）")
+                    elif not tasks:
+                        # 【重构】智能显示未配置平台的提示
+                        unconfigured_platforms = []
+                        if not self.haha_adapter:
+                            unconfigured_platforms.append("哈哈平台")
+                        if not self.mahua_adapter:
+                            unconfigured_platforms.append("麻花平台")
+
+                        if unconfigured_platforms:
+                            unconfigured_msg = "、".join(unconfigured_platforms)
+                            self.status_update.emit(f"⚠️ 未配置{unconfigured_msg}，请前往'平台配置'Tab设置")
+                        else:
+                            self.status_update.emit("⚠️ 所有平台均已停止，请检查配置")
+
+                        await asyncio.sleep(API_REQUEST_INTERVAL)
+                        continue
+                    else:
+                        # 所有平台正常工作
+                        self.status_update.emit("正在获取订单数据...")
+
                     # 并发获取多个平台的数据
-                    results = await asyncio.gather(
-                        haha_adapter.fetch_and_process(),
-                        mahua_adapter.fetch_and_process(),
-                        return_exceptions=True
-                    )
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
 
                     # 处理结果
                     successful_platforms = []
                     total_new_orders = 0
 
                     for i, result in enumerate(results):
-                        platform_name = [HAHA_PLATFORM_NAME, MAHUA_PLATFORM_NAME][i]
+                        platform_name = platform_names[i]
 
                         if isinstance(result, Exception):
                             logging.error(f"{platform_name}平台获取数据失败: {result}")
@@ -132,9 +261,30 @@ class Worker(QObject):
         # 运行异步主循环
         asyncio.run(main_loop())
 
+    def on_platform_config_updated(self):
+        """【V3.5新增】处理平台配置更新信号，执行热更新"""
+        try:
+            logging.info("收到平台配置更新信号，开始热更新...")
+
+            # 重新初始化平台适配器
+            self.init_platform_adapters()
+
+            logging.info("平台适配器热更新完成")
+
+        except Exception as e:
+            logging.error(f"平台配置热更新失败: {e}")
+
+    def set_user_login_status(self, is_logged_in: bool):
+        """【修复】设置用户登录状态"""
+        self.is_user_logged_in = is_logged_in
+        logging.info(f"Worker线程用户登录状态已更新: {'已登录' if is_logged_in else '未登录'}")
+
 
 class MainWindow(QMainWindow):
     """主窗口类 - 多元化策略引擎界面"""
+
+    # 【V3.5新增】平台配置更新信号
+    platform_config_updated = pyqtSignal()
 
     def __init__(self):
         """【中央仓储架构】初始化主窗口 - 响应式UI"""
@@ -390,18 +540,23 @@ class MainWindow(QMainWindow):
 
     def create_mahua_config_group(self):
         """创建麻花平台配置组"""
-        self.mahua_config_group = QGroupBox("麻花平台配置")
+        self.mahua_config_group = QGroupBox("麻花平台")
         layout = QFormLayout()
+
+        # 【重构】添加配置说明
+        mahua_info_label = QLabel("请输入您的麻花平台开发者凭证（dev_code和secret_key）")
+        mahua_info_label.setStyleSheet("color: #666; font-size: 12px; margin-bottom: 5px;")
+        layout.addRow(mahua_info_label)
 
         # 开发者代码输入框
         self.mahua_dev_code_input = QLineEdit()
-        self.mahua_dev_code_input.setPlaceholderText("请输入开发者代码")
+        self.mahua_dev_code_input.setPlaceholderText("例如：b2b4378b42df47518fc3511488d6d555")
         layout.addRow("开发者代码 (dev_code):", self.mahua_dev_code_input)
 
         # 密钥输入框和显示/隐藏按钮
         secret_layout = QHBoxLayout()
         self.mahua_secret_key_input = QLineEdit()
-        self.mahua_secret_key_input.setPlaceholderText("请输入密钥")
+        self.mahua_secret_key_input.setPlaceholderText("例如：69eaf6b39da442809644dc2e3e233cf5")
         self.mahua_secret_key_input.setEchoMode(QLineEdit.EchoMode.Password)  # 默认密码模式
 
         # 显示/隐藏密码按钮
@@ -434,14 +589,18 @@ class MainWindow(QMainWindow):
 
     def create_haha_config_group(self):
         """创建哈哈平台配置组"""
-        self.haha_config_group = QGroupBox("哈哈平台配置")
+        self.haha_config_group = QGroupBox("哈哈平台")
         layout = QFormLayout()
 
-        # Cookie输入框（多行）
-        self.haha_cookie_input = QTextEdit()
-        self.haha_cookie_input.setPlaceholderText("请输入Cookie字符串")
-        self.haha_cookie_input.setMaximumHeight(100)  # 限制高度
-        layout.addRow("Cookie:", self.haha_cookie_input)
+        # 【重构】添加配置说明
+        haha_info_label = QLabel("请输入您的哈哈平台Token（32-40位字符串）")
+        haha_info_label.setStyleSheet("color: #666; font-size: 12px; margin-bottom: 5px;")
+        layout.addRow(haha_info_label)
+
+        # Token输入框
+        self.haha_token_input = QLineEdit()
+        self.haha_token_input.setPlaceholderText("例如：64932f01040374d3a7dc9438a48c5178")
+        layout.addRow("Token:", self.haha_token_input)
 
         # 测试并应用按钮和结果标签
         button_layout = QHBoxLayout()
@@ -477,7 +636,7 @@ class MainWindow(QMainWindow):
             self.mahua_test_apply_btn.setEnabled(enabled)
 
             # 哈哈平台控件
-            self.haha_cookie_input.setEnabled(enabled)
+            self.haha_token_input.setEnabled(enabled)
             self.haha_test_apply_btn.setEnabled(enabled)
 
             logging.info(f"平台配置控件状态已设置为: {'启用' if enabled else '禁用'}")
@@ -501,7 +660,7 @@ class MainWindow(QMainWindow):
                 # 恢复哈哈平台配置
                 haha_config = credentials.get('haha', {})
                 if haha_config:
-                    self.haha_cookie_input.setPlainText(haha_config.get('cookie', ''))
+                    self.haha_token_input.setText(haha_config.get('token', ''))
 
                 logging.info("平台凭证配置已从数据库恢复")
             else:
@@ -510,8 +669,46 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logging.error(f"加载平台凭证配置失败: {e}")
 
+    def load_haha_token_from_config(self):
+        """【修复】从config.py加载哈哈平台Token到UI输入框"""
+        try:
+            from config import API_TOKEN
+
+            # 将config.py中的Token加载到UI输入框
+            self.haha_token_input.setText(API_TOKEN)
+
+            # 显示成功消息
+            self.haha_result_label.setText("✅ 已从配置文件加载Token")
+            self.haha_result_label.setStyleSheet("color: green; font-weight: bold;")
+
+            logging.info(f"已从config.py加载Token到UI: {API_TOKEN}")
+
+            # 提示用户点击测试按钮
+            QMessageBox.information(
+                self,
+                "Token已加载",
+                f"已从config.py加载Token到输入框：\n{API_TOKEN}\n\n请点击'测试并应用新配置'按钮来验证并保存新Token。"
+            )
+
+        except Exception as e:
+            error_msg = f"从配置文件加载Token失败: {e}"
+            logging.error(error_msg)
+            self.haha_result_label.setText(f"❌ {error_msg}")
+            self.haha_result_label.setStyleSheet("color: red; font-weight: bold;")
+
+            QMessageBox.warning(
+                self,
+                "加载失败",
+                f"从config.py加载Token失败：\n{error_msg}"
+            )
+
     def save_platform_credentials(self):
-        """【新增】保存平台凭证配置到数据库"""
+        """【已弃用】保存平台凭证配置到数据库 - 请使用save_specific_platform_credentials"""
+        # 为了向后兼容，调用新的方法保存所有平台
+        return self.save_all_platform_credentials()
+
+    def save_all_platform_credentials(self):
+        """【新增】保存所有平台凭证配置到数据库"""
         try:
             credentials = {
                 'mahua': {
@@ -519,18 +716,71 @@ class MainWindow(QMainWindow):
                     'secret_key': self.mahua_secret_key_input.text().strip()
                 },
                 'haha': {
-                    'cookie': self.haha_cookie_input.toPlainText().strip()
+                    'token': self.haha_token_input.text().strip()
                 }
             }
 
             credentials_json = json.dumps(credentials, ensure_ascii=False)
             self.db_manager.save_setting('platform_credentials', credentials_json)
 
-            logging.info("平台凭证配置已保存到数据库")
+            logging.info("所有平台凭证配置已保存到数据库")
             return True
 
         except Exception as e:
-            logging.error(f"保存平台凭证配置失败: {e}")
+            logging.error(f"保存所有平台凭证配置失败: {e}")
+            return False
+
+    def save_specific_platform_credentials(self, platform_name):
+        """【修复】只保存特定平台的凭证配置，不影响其他平台"""
+        try:
+            # 先读取现有配置
+            existing_credentials = {}
+            credentials_json = self.db_manager.load_setting('platform_credentials')
+            if credentials_json:
+                existing_credentials = json.loads(credentials_json)
+
+            # 【调试】记录保存过程
+            logging.info("=" * 60)
+            logging.info(f"🔍 保存{platform_name}平台凭证配置")
+            logging.info("=" * 60)
+            logging.info(f"📋 现有配置: {existing_credentials}")
+
+            # 根据平台类型更新对应的配置
+            if platform_name == 'mahua':
+                new_dev_code = self.mahua_dev_code_input.text().strip()
+                new_secret_key = self.mahua_secret_key_input.text().strip()
+
+                logging.info(f"📋 麻花平台新配置:")
+                logging.info(f"  dev_code: '{new_dev_code}'")
+                logging.info(f"  secret_key: '{new_secret_key}'")
+
+                existing_credentials['mahua'] = {
+                    'dev_code': new_dev_code,
+                    'secret_key': new_secret_key
+                }
+            elif platform_name == 'haha':
+                new_token = self.haha_token_input.text().strip()
+
+                logging.info(f"📋 哈哈平台新配置:")
+                logging.info(f"  token: '{new_token}'")
+
+                existing_credentials['haha'] = {
+                    'token': new_token
+                }
+            else:
+                logging.error(f"未知的平台类型: {platform_name}")
+                return False
+
+            # 保存更新后的配置
+            credentials_json = json.dumps(existing_credentials, ensure_ascii=False)
+            self.db_manager.save_setting('platform_credentials', credentials_json)
+
+            logging.info(f"📋 更新后的完整配置: {existing_credentials}")
+            logging.info(f"✅ {platform_name}平台凭证配置已保存到数据库")
+            return True
+
+        except Exception as e:
+            logging.error(f"❌ 保存{platform_name}平台凭证配置失败: {e}")
             return False
 
     def connect_platform_config_signals(self):
@@ -558,17 +808,46 @@ class MainWindow(QMainWindow):
             dev_code = self.mahua_dev_code_input.text().strip()
             secret_key = self.mahua_secret_key_input.text().strip()
 
+            # 【调试】详细记录参数获取过程
+            logging.info("=" * 60)
+            logging.info("🔍 麻花平台测试连接 - 参数获取过程")
+            logging.info("=" * 60)
+            logging.info(f"📋 UI输入框原始值:")
+            logging.info(f"  dev_code输入框: '{self.mahua_dev_code_input.text()}'")
+            logging.info(f"  secret_key输入框: '{self.mahua_secret_key_input.text()}'")
+            logging.info(f"📋 处理后的参数值:")
+            logging.info(f"  dev_code (strip后): '{dev_code}'")
+            logging.info(f"  secret_key (strip后): '{secret_key}'")
+            logging.info(f"  dev_code长度: {len(dev_code)}")
+            logging.info(f"  secret_key长度: {len(secret_key)}")
+
             # 验证输入
             if not dev_code or not secret_key:
+                logging.warning("❌ 参数验证失败：dev_code或secret_key为空")
                 self.mahua_result_label.setText("❌ 请填写完整的配置信息")
                 self.mahua_result_label.setStyleSheet("color: #e74c3c;")
                 return
 
-            # 创建测试线程
-            self.mahua_test_thread = PlatformTestThread('mahua', {
+            # 【修复】创建真实API测试线程，使用config.py中的正确URL
+            from config import MAHUA_LOGIN_URL, MAHUA_ORDER_LIST_URL, MAHUA_CHANNEL_ID
+
+            # 【调试】构建配置字典
+            test_config = {
                 'dev_code': dev_code,
-                'secret_key': secret_key
-            })
+                'secret_key': secret_key,
+                'channel_id': MAHUA_CHANNEL_ID,
+                'login_url': MAHUA_LOGIN_URL,  # 【修复】使用正确的API地址
+                'order_list_url': MAHUA_ORDER_LIST_URL  # 【修复】使用正确的API地址
+            }
+
+            logging.info(f"📋 配置字典构建完成:")
+            logging.info(f"  dev_code: '{test_config['dev_code']}'")
+            logging.info(f"  secret_key: '{test_config['secret_key']}'")
+            logging.info(f"  channel_id: '{test_config['channel_id']}'")
+            logging.info(f"  login_url: '{test_config['login_url']}'")
+            logging.info(f"  order_list_url: '{test_config['order_list_url']}'")
+
+            self.mahua_test_thread = RealAPITestThread('mahua', test_config)
             self.mahua_test_thread.test_result.connect(self.on_mahua_test_result)
             self.mahua_test_thread.start()
 
@@ -590,17 +869,26 @@ class MainWindow(QMainWindow):
             self.haha_result_label.setStyleSheet("color: #3498db;")
 
             # 获取输入的配置
-            cookie = self.haha_cookie_input.toPlainText().strip()
+            token = self.haha_token_input.text().strip()
 
             # 验证输入
-            if not cookie:
-                self.haha_result_label.setText("❌ 请填写Cookie信息")
+            if not token:
+                self.haha_result_label.setText("❌ 请填写Token信息")
                 self.haha_result_label.setStyleSheet("color: #e74c3c;")
                 return
 
-            # 创建测试线程
-            self.haha_test_thread = PlatformTestThread('haha', {
-                'cookie': cookie
+            # 【V3.5升级】创建真实API测试线程
+            from config import API_URL, API_HEADERS_TEMPLATE, API_DATA_PAYLOAD
+
+            # 【修复】动态构建headers，使用用户输入的token
+            dynamic_headers = API_HEADERS_TEMPLATE.copy()
+            dynamic_headers['token'] = token
+
+            self.haha_test_thread = RealAPITestThread('haha', {
+                'token': token,
+                'api_url': API_URL,  # 【修复】使用真实的哈哈平台API地址
+                'headers': dynamic_headers,  # 【修复】使用动态构建的headers
+                'data_payload': API_DATA_PAYLOAD  # 【修复】使用真实的payload
             })
             self.haha_test_thread.test_result.connect(self.on_haha_test_result)
             self.haha_test_thread.start()
@@ -615,18 +903,23 @@ class MainWindow(QMainWindow):
                 self.haha_test_apply_btn.setEnabled(True)
 
     def on_mahua_test_result(self, success, message):
-        """【新增】处理麻花平台测试结果"""
+        """【修复】处理麻花平台测试结果"""
         try:
             if success:
-                # 测试成功，保存配置
-                if self.save_platform_credentials():
+                # 【修复】测试成功，只保存麻花平台配置
+                if self.save_specific_platform_credentials('mahua'):
                     self.mahua_result_label.setText("✅ 连接成功并已应用！")
                     self.mahua_result_label.setStyleSheet("color: #27ae60; font-weight: bold;")
 
-                    # 发射配置更新信号（如果需要热更新）
-                    # self.platform_config_updated.emit()
+                    # 【修复】重置麻花平台的停止状态
+                    if hasattr(self, 'worker') and self.worker and self.worker.mahua_adapter:
+                        self.worker.mahua_adapter._reset_auth_failure_count()
+                        logging.info("麻花平台停止状态已重置")
 
-                    logging.info("麻花平台配置测试成功并已保存")
+                    # 【V3.5升级】发射配置更新信号进行热更新
+                    self.platform_config_updated.emit()
+
+                    logging.info("✅ 麻花平台配置测试成功并已保存")
                 else:
                     self.mahua_result_label.setText("✅ 连接成功，但保存失败")
                     self.mahua_result_label.setStyleSheet("color: #f39c12;")
@@ -635,23 +928,28 @@ class MainWindow(QMainWindow):
                 self.mahua_result_label.setStyleSheet("color: #e74c3c;")
 
         except Exception as e:
-            logging.error(f"处理麻花平台测试结果异常: {e}")
+            logging.error(f"❌ 处理麻花平台测试结果异常: {e}")
         finally:
             self.mahua_test_apply_btn.setEnabled(True)
 
     def on_haha_test_result(self, success, message):
-        """【新增】处理哈哈平台测试结果"""
+        """【修复】处理哈哈平台测试结果"""
         try:
             if success:
-                # 测试成功，保存配置
-                if self.save_platform_credentials():
+                # 【修复】测试成功，只保存哈哈平台配置
+                if self.save_specific_platform_credentials('haha'):
                     self.haha_result_label.setText("✅ 连接成功并已应用！")
                     self.haha_result_label.setStyleSheet("color: #27ae60; font-weight: bold;")
 
-                    # 发射配置更新信号（如果需要热更新）
-                    # self.platform_config_updated.emit()
+                    # 【修复】重置哈哈平台的停止状态
+                    if hasattr(self, 'worker') and self.worker and self.worker.haha_adapter:
+                        self.worker.haha_adapter._reset_auth_failure_count()
+                        logging.info("哈哈平台停止状态已重置")
 
-                    logging.info("哈哈平台配置测试成功并已保存")
+                    # 【V3.5升级】发射配置更新信号进行热更新
+                    self.platform_config_updated.emit()
+
+                    logging.info("✅ 哈哈平台配置测试成功并已保存")
                 else:
                     self.haha_result_label.setText("✅ 连接成功，但保存失败")
                     self.haha_result_label.setStyleSheet("color: #f39c12;")
@@ -660,7 +958,7 @@ class MainWindow(QMainWindow):
                 self.haha_result_label.setStyleSheet("color: #e74c3c;")
 
         except Exception as e:
-            logging.error(f"处理哈哈平台测试结果异常: {e}")
+            logging.error(f"❌ 处理哈哈平台测试结果异常: {e}")
         finally:
             self.haha_test_apply_btn.setEnabled(True)
 
@@ -1698,9 +1996,14 @@ class MainWindow(QMainWindow):
             self.worker.status_update.connect(self.on_status_update)
             self.worker.cycle_finished.connect(self.on_cycle_finished)
 
-            # 【新增】连接平台凭证失效信号
-            self.worker.haha_adapter.signal_emitter.platform_credential_expired.connect(self.on_platform_credential_expired)
-            self.worker.mahua_adapter.signal_emitter.platform_credential_expired.connect(self.on_platform_credential_expired)
+            # 【V3.5升级】连接平台凭证失效信号（只连接已配置的平台）
+            if self.worker.haha_adapter:
+                self.worker.haha_adapter.signal_emitter.platform_credential_expired.connect(self.on_platform_credential_expired)
+            if self.worker.mahua_adapter:
+                self.worker.mahua_adapter.signal_emitter.platform_credential_expired.connect(self.on_platform_credential_expired)
+
+            # 【V3.5新增】连接平台配置更新信号
+            self.platform_config_updated.connect(self.worker.on_platform_config_updated)
 
             # 启动线程
             self.worker_thread.start()
@@ -2024,6 +2327,10 @@ class MainWindow(QMainWindow):
                 # 【新增】启用平台配置Tab中的所有控件
                 self.enable_platform_config_controls(True)
 
+                # 【修复】设置Worker线程用户登录状态
+                if hasattr(self, 'worker') and self.worker:
+                    self.worker.set_user_login_status(True)
+
                 # 【修复Bug】使用服务器返回的用户数据更新UI
                 if user_data:
                     # 第一步：更新"设备状态"标签
@@ -2169,7 +2476,7 @@ class MainWindow(QMainWindow):
             logging.error(f"收到平台凭证失效信号: {platform_name}")
 
             # 1. 在状态栏显示红色的持续警告信息
-            warning_message = f"⚠️ {platform_name}平台凭证已失效，请检查配置！"
+            warning_message = f"⚠️ {platform_name}平台已停止请求（连续失败5次），请重新配置！"
             self.statusBar().showMessage(warning_message)
             self.statusBar().setStyleSheet("QStatusBar { background-color: #e74c3c; color: white; font-weight: bold; }")
 
@@ -2267,9 +2574,9 @@ class HeartbeatThread(QThread):
                 pass
 
 
-# 【新增】平台配置测试线程类
-class PlatformTestThread(QThread):
-    """平台配置测试线程"""
+# 【V3.5升级】真实API测试线程类
+class RealAPITestThread(QThread):
+    """使用真实API进行平台配置测试的线程"""
     test_result = pyqtSignal(bool, str)  # success, message
 
     def __init__(self, platform_type, config):
@@ -2278,60 +2585,68 @@ class PlatformTestThread(QThread):
         self.config = config
 
     def run(self):
-        """执行平台连接测试"""
+        """执行真实API连接测试"""
         try:
+            # 创建临时适配器实例进行测试
             if self.platform_type == 'mahua':
-                success, message = self.test_mahua_connection()
+                success, message = asyncio.run(self.test_mahua_real_api())
             elif self.platform_type == 'haha':
-                success, message = self.test_haha_connection()
+                success, message = asyncio.run(self.test_haha_real_api())
             else:
                 success, message = False, "未知的平台类型"
 
             self.test_result.emit(success, message)
 
         except Exception as e:
-            logging.error(f"平台连接测试异常: {e}")
+            logging.error(f"真实API测试异常: {e}")
             self.test_result.emit(False, f"测试异常: {str(e)}")
 
-    def test_mahua_connection(self):
-        """测试麻花平台连接"""
+    async def test_mahua_real_api(self):
+        """使用真实API测试麻花平台连接"""
         try:
-            # 这里应该调用麻花平台的测试方法
-            # 暂时返回成功，实际应该实现真实的连接测试
-            import time
-            time.sleep(2)  # 模拟网络请求
+            from core.platforms.mahua_adapter import MahuaAdapter
 
-            dev_code = self.config.get('dev_code', '')
-            secret_key = self.config.get('secret_key', '')
+            # 【调试】记录RealAPITestThread接收到的配置
+            logging.info("📋 RealAPITestThread接收到的配置:")
+            logging.info(f"  self.config: {self.config}")
+            for key, value in self.config.items():
+                logging.info(f"    {key}: '{value}'")
 
-            # 简单验证
-            if len(dev_code) < 3 or len(secret_key) < 10:
-                return False, "配置信息格式不正确"
+            # 创建临时适配器实例
+            temp_adapter = MahuaAdapter("麻花测试", self.config)
 
-            # 实际应该调用麻花平台API进行验证
-            return True, "连接测试成功"
+            # 【调试】记录适配器实例的配置
+            logging.info("📋 MahuaAdapter实例配置:")
+            logging.info(f"  adapter.dev_code: '{temp_adapter.dev_code}'")
+            logging.info(f"  adapter.secret_key: '{temp_adapter.secret_key}'")
+            logging.info(f"  adapter.channel_id: '{temp_adapter.channel_id}'")
+            logging.info(f"  adapter.login_url: '{temp_adapter.login_url}'")
+            logging.info(f"  adapter.order_list_url: '{temp_adapter.order_list_url}'")
+
+            # 调用真实的test_credentials方法
+            logging.info("📋 开始调用test_credentials方法...")
+            success, message = await temp_adapter.test_credentials()
+            logging.info(f"📋 test_credentials结果: success={success}, message='{message}'")
+            return success, message
 
         except Exception as e:
+            logging.error(f"麻花平台真实API测试异常: {e}")
             return False, f"连接测试失败: {str(e)}"
 
-    def test_haha_connection(self):
-        """测试哈哈平台连接"""
+    async def test_haha_real_api(self):
+        """使用真实API测试哈哈平台连接"""
         try:
-            # 这里应该调用哈哈平台的测试方法
-            # 暂时返回成功，实际应该实现真实的连接测试
-            import time
-            time.sleep(2)  # 模拟网络请求
+            from core.platforms.haha_adapter import HahaAdapter
 
-            cookie = self.config.get('cookie', '')
+            # 创建临时适配器实例
+            temp_adapter = HahaAdapter("哈哈测试", self.config)
 
-            # 简单验证
-            if 'PHPSESSID' not in cookie or len(cookie) < 20:
-                return False, "Cookie格式不正确"
-
-            # 实际应该调用哈哈平台API进行验证
-            return True, "连接测试成功"
+            # 调用真实的test_credentials方法
+            success, message = await temp_adapter.test_credentials()
+            return success, message
 
         except Exception as e:
+            logging.error(f"哈哈平台真实API测试异常: {e}")
             return False, f"连接测试失败: {str(e)}"
 
 

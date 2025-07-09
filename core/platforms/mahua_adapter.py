@@ -12,10 +12,7 @@ import collections
 import aiohttp
 from .base_adapter import BaseAdapter
 from ..database import DatabaseManager
-from config import (
-    MAHUA_DEV_CODE, MAHUA_SECRET_KEY, MAHUA_CHANNEL_ID,
-    MAHUA_LOGIN_URL, MAHUA_ORDER_LIST_URL, MAX_ORDERS_CACHE
-)
+from config import MAX_ORDERS_CACHE
 from PyQt6.QtCore import QObject, pyqtSignal
 
 
@@ -27,9 +24,17 @@ class CredentialSignalEmitter(QObject):
 class MahuaAdapter(BaseAdapter):
     """麻花平台适配器类"""
 
-    def __init__(self, name: str):
+    def __init__(self, name: str, config: dict = None):
         """初始化麻花平台适配器"""
         super().__init__(name)
+
+        # 【V3.5升级】配置注入机制
+        self.config = config or {}
+        self.dev_code = self.config.get('dev_code', '')
+        self.secret_key = self.config.get('secret_key', '')
+        self.channel_id = self.config.get('channel_id', '')
+        self.login_url = self.config.get('login_url', '')
+        self.order_list_url = self.config.get('order_list_url', '')
 
         # Token缓存机制
         self.token = None
@@ -39,6 +44,9 @@ class MahuaAdapter(BaseAdapter):
         self.auth_failure_count = 0  # 连续认证失败次数
         self.max_auth_failures = 5   # 最大允许的连续认证失败次数
         self.credential_expired = False  # 凭证是否已失效
+
+        # 【修复】平台自动停止机制
+        self.is_stopped = False  # 平台是否已停止请求
 
         # 【新增】信号发射器
         self.signal_emitter = CredentialSignalEmitter()
@@ -50,7 +58,41 @@ class MahuaAdapter(BaseAdapter):
         self.db_manager = DatabaseManager()
 
         logging.info(f"{self.name}平台适配器初始化完成")
-    
+
+    async def test_credentials(self) -> tuple[bool, str]:
+        """【V3.5新增】测试凭证有效性"""
+        try:
+            # 【调试】记录test_credentials方法接收到的配置
+            logging.info("=" * 60)
+            logging.info("🔍 MahuaAdapter.test_credentials - 配置验证")
+            logging.info("=" * 60)
+            logging.info(f"📋 适配器实例配置:")
+            logging.info(f"  self.dev_code: '{self.dev_code}'")
+            logging.info(f"  self.secret_key: '{self.secret_key}'")
+            logging.info(f"  self.channel_id: '{self.channel_id}'")
+            logging.info(f"  self.login_url: '{self.login_url}'")
+            logging.info(f"  self.order_list_url: '{self.order_list_url}'")
+
+            if not self.dev_code or not self.secret_key:
+                logging.warning("❌ 配置信息不完整")
+                return False, "配置信息不完整，请检查开发者代码和密钥"
+
+            # 尝试获取Token来测试凭证
+            logging.info("📋 开始调用_get_token方法...")
+            token = await self._get_token()
+            logging.info(f"📋 _get_token返回结果: {token if token else 'None'}")
+
+            if token:
+                logging.info("✅ 凭证验证成功")
+                return True, "凭证有效，连接成功！"
+            else:
+                logging.warning("❌ 凭证验证失败")
+                return False, "凭证无效，请检查开发者代码和密钥后重试"
+
+        except Exception as e:
+            logging.error(f"❌ 测试{self.name}平台凭证异常: {e}")
+            return False, f"连接测试异常: {str(e)}"
+
     async def _get_token(self):
         """
         获取麻花平台的访问Token
@@ -65,27 +107,59 @@ class MahuaAdapter(BaseAdapter):
             body_json_str = "{}"
             txntime_ms = str(int(time.time() * 1000))
             
-            # 生成签名
-            string_to_sign = body_json_str + MAHUA_SECRET_KEY + txntime_ms
+            # 【V3.5升级】检查配置完整性
+            if not self.secret_key or not self.dev_code or not self.login_url:
+                logging.error(f"{self.name}平台配置不完整，无法获取Token")
+                return None
+
+            # 【调试】生成签名过程
+            string_to_sign = body_json_str + self.secret_key + txntime_ms
+            logging.info(f"📋 签名生成过程:")
+            logging.info(f"  body_json_str: '{body_json_str}'")
+            logging.info(f"  secret_key: '{self.secret_key}'")
+            logging.info(f"  txntime_ms: '{txntime_ms}'")
+            logging.info(f"  string_to_sign: '{string_to_sign}'")
+
             md5 = hashlib.md5()
             md5.update(string_to_sign.encode('utf-8'))
             sign = md5.hexdigest()
-            
-            # 构建请求头
+            logging.info(f"  生成的签名: '{sign}'")
+
+            # 【调试】构建请求头
             headers = {
-                'channelid': MAHUA_CHANNEL_ID,
+                'channelid': self.channel_id,
                 'txntime': txntime_ms,
-                'devCode': MAHUA_DEV_CODE,
+                'devCode': self.dev_code,
                 'sign': sign,
                 'Content-Type': 'application/json; charset=utf-8'
             }
-            
-            async with aiohttp.ClientSession() as session:
+            logging.info(f"📋 请求头构建完成:")
+            for key, value in headers.items():
+                logging.info(f"    {key}: '{value}'")
+
+            # 【修复】使用网络配置进行SSL和超时设置
+            from config import NETWORK_CONFIG
+            import ssl
+
+            # 创建SSL上下文
+            ssl_context = None
+            if not NETWORK_CONFIG.get("verify_ssl", True):
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+
+            # 创建超时配置
+            timeout = aiohttp.ClientTimeout(total=NETWORK_CONFIG.get("timeout", 30))
+
+            connector = aiohttp.TCPConnector(ssl=ssl_context)
+            async with aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector
+            ) as session:
                 async with session.post(
-                    MAHUA_LOGIN_URL,
+                    self.login_url,
                     data=body_json_str.encode('utf-8'),
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=10)
+                    headers=headers
                 ) as response:
                     response_text = await response.text()
                     response_data = json.loads(response_text)
@@ -220,6 +294,17 @@ class MahuaAdapter(BaseAdapter):
             dict: 包含平台名称、成功状态和订单列表的字典
         """
         try:
+            # 【修复】检查平台停止状态
+            if self.is_stopped:
+                logging.warning(f"{self.name}平台已停止请求（连续失败{self.auth_failure_count}次）")
+                return {
+                    'name': self.name,
+                    'success': False,
+                    'orders': [],
+                    'stopped': True,
+                    'stop_reason': f'连续认证失败{self.auth_failure_count}次，已自动停止'
+                }
+
             # 1. 检查Token是否有效或过期
             current_time = time.time()
             if not self.token or current_time >= self.token_expiry_time:
@@ -238,28 +323,50 @@ class MahuaAdapter(BaseAdapter):
             body_json_str = json.dumps(body_data, separators=(',', ':'))
             txntime_ms = str(int(time.time() * 1000))
             
+            # 【V3.5升级】检查配置完整性
+            if not self.secret_key or not self.dev_code or not self.order_list_url:
+                logging.error(f"{self.name}平台配置不完整，跳过数据获取")
+                return {'name': self.name, 'success': False, 'orders': []}
+
             # 生成签名
-            string_to_sign = body_json_str + MAHUA_SECRET_KEY + txntime_ms
+            string_to_sign = body_json_str + self.secret_key + txntime_ms
             md5 = hashlib.md5()
             md5.update(string_to_sign.encode('utf-8'))
             sign = md5.hexdigest()
-            
+
             # 构建请求头
             headers = {
-                'channelid': MAHUA_CHANNEL_ID,
+                'channelid': self.channel_id,
                 'txntime': txntime_ms,
-                'devCode': MAHUA_DEV_CODE,
+                'devCode': self.dev_code,
                 'token': self.token,
                 'sign': sign,
                 'Content-Type': 'application/json; charset=utf-8'
             }
-            
-            async with aiohttp.ClientSession() as session:
+
+            # 【修复】使用网络配置进行SSL和超时设置
+            from config import NETWORK_CONFIG
+            import ssl
+
+            # 创建SSL上下文
+            ssl_context = None
+            if not NETWORK_CONFIG.get("verify_ssl", True):
+                ssl_context = ssl.create_default_context()
+                ssl_context.check_hostname = False
+                ssl_context.verify_mode = ssl.CERT_NONE
+
+            # 创建超时配置
+            timeout = aiohttp.ClientTimeout(total=NETWORK_CONFIG.get("timeout", 30))
+
+            connector = aiohttp.TCPConnector(ssl=ssl_context)
+            async with aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector
+            ) as session:
                 async with session.post(
-                    MAHUA_ORDER_LIST_URL,
+                    self.order_list_url,
                     data=body_json_str.encode('utf-8'),
-                    headers=headers,
-                    timeout=aiohttp.ClientTimeout(total=15)
+                    headers=headers
                 ) as response:
                     response_text = await response.text()
                     response_data = json.loads(response_text)
@@ -310,6 +417,25 @@ class MahuaAdapter(BaseAdapter):
                         
         except Exception as e:
             logging.error(f"❌ {self.name}平台处理过程中发生错误: {e}")
+            logging.error(f"错误类型: {type(e).__name__}")
+
+            # 【修复】检查是否为认证相关错误
+            error_str = str(e).lower()
+            error_type = type(e).__name__.lower()
+
+            # SSL错误、连接错误、认证错误都应该触发失败计数
+            auth_related_errors = [
+                'ssl', 'certificate', 'cert', 'tls',  # SSL相关错误
+                'connection', 'timeout', 'connect',   # 连接相关错误
+                'auth', 'token', 'login', 'unauthorized', 'forbidden',  # 认证相关错误
+                'clientconnectorerror', 'clientosslerror', 'clientconnectortimeouterror'  # aiohttp特定错误
+            ]
+
+            if any(keyword in error_str for keyword in auth_related_errors) or \
+               any(keyword in error_type for keyword in auth_related_errors):
+                logging.warning(f"{self.name}平台遇到认证相关错误，触发失败计数")
+                self._handle_auth_failure()
+
             return {'name': self.name, 'success': False, 'orders': []}
 
     def _handle_auth_failure(self):
@@ -322,7 +448,9 @@ class MahuaAdapter(BaseAdapter):
 
         if self.auth_failure_count >= self.max_auth_failures and not self.credential_expired:
             self.credential_expired = True
-            logging.error(f"{self.name}平台凭证已失效，连续失败{self.auth_failure_count}次")
+            # 【修复】设置平台停止状态
+            self.is_stopped = True
+            logging.error(f"{self.name}平台凭证已失效，连续失败{self.auth_failure_count}次，已自动停止API请求")
 
             # 发射凭证失效信号
             self.signal_emitter.platform_credential_expired.emit(self.name)
@@ -336,3 +464,5 @@ class MahuaAdapter(BaseAdapter):
             logging.info(f"{self.name}平台认证恢复正常，重置失败计数器")
             self.auth_failure_count = 0
             self.credential_expired = False
+            # 【修复】重置停止状态
+            self.is_stopped = False

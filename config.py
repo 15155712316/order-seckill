@@ -13,20 +13,18 @@ NETWORK_CONFIG = {
 }
 
 # --- 麻花平台配置 ---
-MAHUA_DEV_CODE = "b2b4378b42df47518fc3511488d6d555"
-MAHUA_SECRET_KEY = "69eaf6b39da442809644dc2e3e233cf5"
-MAHUA_CHANNEL_ID = 'OP0002'
+# 注意：敏感凭证信息（dev_code、secret_key）已移除，需要通过UI配置
+MAHUA_CHANNEL_ID = 'OP0002'  # 固定渠道ID，非敏感信息
 MAHUA_LOGIN_URL = "https://openapi.quanma51.com/api/user-server/user/dev/login"
 MAHUA_ORDER_LIST_URL = "https://openapi.quanma51.com/api/movie-server/movie/bidding/info/list"
 
 # --- 哈哈平台配置 ---
+# 注意：敏感凭证信息（token）已移除，需要通过UI配置
 API_URL = 'https://hahapiao.cn/api/Synchro/pcToList'
-API_TOKEN = "64932f01040374d3a7dc9438a48c5178"
 
-# 从curl命令中提取的Cookie字符串
-API_COOKIE = "_c_WBKFRo=CbkeIVy2jCMFQKiSKiNZIOjL0rfGmOzcfROYTyCm; PHPSESSID=e2vnuucrt8qnts3ul9b13aabr3"
 
-API_HEADERS = {
+# 【修复】基础headers模板，不包含token（token将动态添加）
+API_HEADERS_TEMPLATE = {
     'accept': 'application/json, text/plain, */*',
     'accept-language': 'zh-CN,zh;q=0.9',
     'content-type': 'application/x-www-form-urlencoded',
@@ -40,9 +38,12 @@ API_HEADERS = {
     'sec-fetch-mode': 'cors',
     'sec-fetch-site': 'same-origin',
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36',
-    'token': API_TOKEN,  # 将token也放入headers
-    'Cookie': API_COOKIE  # 将cookie字符串放入headers
 }
+
+# 【重构】移除硬编码token，headers将在运行时动态构建
+# API_HEADERS现在只是API_HEADERS_TEMPLATE的别名，用于向后兼容
+API_HEADERS = API_HEADERS_TEMPLATE.copy()
+# 注意：token字段将在适配器初始化时动态添加
 
 API_DATA_PAYLOAD = 'limit=200'
 
