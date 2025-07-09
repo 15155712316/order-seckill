@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
     QButtonGroup, QLabel, QMessageBox, QStackedWidget, QFileDialog,
     QComboBox, QSpinBox, QDoubleSpinBox, QGroupBox, QTextEdit, QToolButton
 )
-from PyQt6.QtCore import QObject, QThread, pyqtSignal, Qt
+from PyQt6.QtCore import QObject, QThread, pyqtSignal, pyqtSlot, Qt, QTimer
 from PyQt6.QtGui import QColor
 
 from core.engine import RuleEngine
@@ -46,6 +46,7 @@ class Worker(QObject):
         """初始化Worker，接受规则引擎实例"""
         super().__init__()
         self.engine = engine
+        logging.info("📋 Worker实例已创建")
 
         # 【V3.5升级】初始化平台适配器实例，使用数据库配置
         self.init_platform_adapters()
@@ -137,146 +138,173 @@ class Worker(QObject):
 
     def run(self):
         """后台任务主方法"""
+        logging.info("📋 Worker线程开始运行")
         # 使用传入的规则引擎实例
-        engine = self.engine
 
-        async def main_loop():
-            """主循环：持续监控订单并匹配规则"""
-            while True:
-                try:
-                    # 【修复】检查用户登录状态
-                    if not self.is_user_logged_in:
-                        self.status_update.emit("⚠️ 请先登录账号以开始监控订单")
-                        await asyncio.sleep(API_REQUEST_INTERVAL)
-                        continue
-
-                    # 发送状态更新
-                    self.status_update.emit("正在获取订单数据...")
-
-                    # 【V3.5升级】只使用已配置且未停止的平台适配器
-                    tasks = []
-                    platform_names = []
-                    stopped_platforms = []
-
-                    if self.haha_adapter:
-                        if not self.haha_adapter.is_stopped:
-                            tasks.append(self.haha_adapter.fetch_and_process())
-                            platform_names.append(HAHA_PLATFORM_NAME)
-                        else:
-                            stopped_platforms.append(f"{HAHA_PLATFORM_NAME}（连续失败{self.haha_adapter.auth_failure_count}次）")
-
-                    if self.mahua_adapter:
-                        if not self.mahua_adapter.is_stopped:
-                            tasks.append(self.mahua_adapter.fetch_and_process())
-                            platform_names.append(MAHUA_PLATFORM_NAME)
-                        else:
-                            stopped_platforms.append(f"{MAHUA_PLATFORM_NAME}（连续失败{self.mahua_adapter.auth_failure_count}次）")
-
-                    # 【修复】更新状态消息，显示停止的平台信息
-                    if stopped_platforms:
-                        if not tasks:
-                            # 所有平台都已停止
-                            stop_msg = "、".join(stopped_platforms)
-                            self.status_update.emit(f"⚠️ 所有平台已停止：{stop_msg}，请重新配置")
-                            await asyncio.sleep(API_REQUEST_INTERVAL)
-                            continue
-                        else:
-                            # 部分平台停止，部分正常
-                            stop_msg = "、".join(stopped_platforms)
-                            self.status_update.emit(f"正在获取订单数据...（已停止：{stop_msg}）")
-                    elif not tasks:
-                        # 【重构】智能显示未配置平台的提示
-                        unconfigured_platforms = []
-                        if not self.haha_adapter:
-                            unconfigured_platforms.append("哈哈平台")
-                        if not self.mahua_adapter:
-                            unconfigured_platforms.append("麻花平台")
-
-                        if unconfigured_platforms:
-                            unconfigured_msg = "、".join(unconfigured_platforms)
-                            self.status_update.emit(f"⚠️ 未配置{unconfigured_msg}，请前往'平台配置'Tab设置")
-                        else:
-                            self.status_update.emit("⚠️ 所有平台均已停止，请检查配置")
-
-                        await asyncio.sleep(API_REQUEST_INTERVAL)
-                        continue
-                    else:
-                        # 所有平台正常工作
-                        self.status_update.emit("正在获取订单数据...")
-
-                    # 并发获取多个平台的数据
-                    results = await asyncio.gather(*tasks, return_exceptions=True)
-
-                    # 处理结果
-                    successful_platforms = []
-                    total_new_orders = 0
-
-                    for i, result in enumerate(results):
-                        platform_name = platform_names[i]
-
-                        if isinstance(result, Exception):
-                            logging.error(f"{platform_name}平台获取数据失败: {result}")
-                            continue
-
-                        # 调试日志：打印平台返回的完整结果结构
-                        logging.debug(f"🔍 {platform_name}平台返回结果: success={result.get('success')}, 字段={list(result.keys())}")
-
-                        if result['success']:
-                            successful_platforms.append(platform_name)
-                            new_orders = result.get('orders', [])  # 修复：使用正确的字段名 'orders'
-                            order_count = len(new_orders)
-                            total_new_orders += order_count
-
-                            # 调试日志：详细记录订单计数
-                            logging.debug(f"📊 {platform_name}平台: 获取到 {order_count} 条新订单，累计 {total_new_orders} 条")
-                            
-                            # 对每个新订单进行规则匹配
-                            for order in new_orders:
-                                match_result = engine.check_order(order)
-                                if match_result:
-                                    # 发现抢单机会
-                                    opportunity_data = {
-                                        'platform': platform_name,
-                                        'profit': match_result['total_profit'],
-                                        'seat_count': match_result['seat_count'],
-                                        'rule_name': match_result['rule_name'],
-                                        'order': match_result['order_details'],
-                                        'type': match_result.get('strategy_type', 'keyword')  # 添加策略类型
-                                    }
-                                    
-                                    # 发送信号到主窗口
-                                    self.new_opportunity.emit(opportunity_data)
-                                    
-                                    # 【移除Worker线程中的语音播报】
-                                    # 语音播报现在在MainWindow的on_new_opportunity方法中处理
-                                    # 这样可以确保语音播报在UI线程中执行，避免线程安全问题
-
-                    # 发送轮询周期完成信号
-                    self.cycle_finished.emit(successful_platforms, total_new_orders)
-
-                    # 等待下一次轮询
-                    await asyncio.sleep(API_REQUEST_INTERVAL)
-
-                except Exception as e:
-                    logging.error(f"主循环发生错误: {e}")
-                    self.status_update.emit(f"发生错误: {e}")
-                    await asyncio.sleep(5)  # 错误后短暂等待
-
-        # 运行异步主循环
-        asyncio.run(main_loop())
-
-    def on_platform_config_updated(self):
-        """【V3.5新增】处理平台配置更新信号，执行热更新"""
+        # 【架构修复】使用纯Qt定时器机制，完全移除asyncio
         try:
-            logging.info("收到平台配置更新信号，开始热更新...")
+            # 创建主循环定时器
+            self.main_timer = QTimer()
+            self.main_timer.timeout.connect(self.execute_sync_cycle)
+            self.main_timer.start(API_REQUEST_INTERVAL * 1000)  # 5秒间隔
+
+            logging.info("📋 Qt定时器调度器已启动")
+        except Exception as e:
+            logging.error(f"启动Qt定时器调度器失败: {e}")
+
+    @pyqtSlot()
+    def execute_sync_cycle(self):
+        """执行同步循环周期"""
+        try:
+            logging.info("🚀 开始执行同步循环周期")
+
+            # 检查用户登录状态
+            logging.debug(f"📋 检查用户登录状态: {self.is_user_logged_in}")
+            if not self.is_user_logged_in:
+                self.status_update.emit("⚠️ 请先登录账号以开始监控订单")
+                logging.debug("📋 用户未登录，跳过本次循环")
+                return
+
+            # 发送状态更新
+            self.status_update.emit("正在获取订单数据...")
+            logging.debug("📋 开始检查平台适配器...")
+
+            # 检查可用的平台适配器
+            available_platforms = []
+
+            logging.debug(f"📋 哈哈适配器状态: 存在={self.haha_adapter is not None}, 停止={self.haha_adapter.is_stopped if self.haha_adapter else 'N/A'}")
+            if self.haha_adapter and not self.haha_adapter.is_stopped:
+                available_platforms.append(('哈哈', self.haha_adapter))
+                logging.debug("📋 哈哈平台已添加到执行列表")
+
+            logging.debug(f"📋 麻花适配器状态: 存在={self.mahua_adapter is not None}, 停止={self.mahua_adapter.is_stopped if self.mahua_adapter else 'N/A'}")
+            if self.mahua_adapter and not self.mahua_adapter.is_stopped:
+                available_platforms.append(('麻花', self.mahua_adapter))
+                logging.debug("📋 麻花平台已添加到执行列表")
+
+            logging.info(f"📋 总共有 {len(available_platforms)} 个可用平台: {[name for name, _ in available_platforms]}")
+
+            if not available_platforms:
+                self.status_update.emit("⚠️ 没有可用的平台适配器")
+                logging.debug("📋 没有可用的平台适配器，跳过本次循环")
+                return
+
+            # 【关键修复】使用QTimer来异步执行平台请求，避免阻塞UI
+            self.execute_platform_requests(available_platforms)
+
+        except Exception as e:
+            logging.error(f"同步循环执行失败: {e}")
+            self.status_update.emit(f"发生错误: {e}")
+
+    def execute_platform_requests(self, available_platforms):
+        """执行平台请求"""
+        try:
+            logging.info("📋 开始执行平台API请求...")
+
+            # 为每个平台创建异步任务
+            import asyncio
+
+            # 创建新的事件循环来处理这一次的请求
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+
+            # 创建所有平台的任务
+            tasks = []
+            platform_names = []
+
+            for platform_name, adapter in available_platforms:
+                logging.info(f"📋 为{platform_name}平台创建请求任务")
+                tasks.append(adapter.fetch_and_process())
+                platform_names.append(platform_name)
+
+            # 执行所有任务
+            if tasks:
+                logging.info(f"📋 开始并发执行 {len(tasks)} 个平台请求")
+                results = loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+
+                # 处理结果
+                self.process_platform_results(results, platform_names)
+
+            # 关闭事件循环
+            loop.close()
+
+        except Exception as e:
+            logging.error(f"执行平台请求失败: {e}")
+            self.status_update.emit(f"平台请求错误: {e}")
+
+    def process_platform_results(self, results, platform_names):
+        """处理平台请求结果"""
+        try:
+            successful_platforms = []
+            total_new_orders = 0
+
+            for i, result in enumerate(results):
+                platform_name = platform_names[i]
+
+                if isinstance(result, Exception):
+                    logging.error(f"{platform_name}平台处理异常: {result}")
+                    continue
+
+                if result.get('success', False):
+                    successful_platforms.append(platform_name)
+                    new_orders = result.get('orders', [])
+                    total_new_orders += len(new_orders)
+
+                    logging.info(f"✅ {platform_name}平台成功获取 {len(new_orders)} 条新订单")
+
+                    # 处理每个新订单
+                    for order in new_orders:
+                        try:
+                            # 使用规则引擎检查订单
+                            match_result = self.engine.check_order(order)
+
+                            if match_result:
+                                # 构建机会数据
+                                opportunity_data = {
+                                    'order': order,
+                                    'rule_name': match_result.get('rule_name', '未知规则'),
+                                    'total_profit': match_result.get('total_profit', 0),
+                                    'seat_count': match_result.get('seat_count', 0),
+                                    'platform': platform_name
+                                }
+
+                                # 发射新机会信号
+                                self.new_opportunity.emit(opportunity_data)
+                        except Exception as e:
+                            logging.error(f"处理订单时发生错误: {e}")
+
+            # 发送轮询周期完成信号
+            self.cycle_finished.emit(successful_platforms, total_new_orders)
+
+            logging.info(f"📋 轮询周期完成 - 成功平台: {successful_platforms}, 新订单总数: {total_new_orders}")
+
+        except Exception as e:
+            logging.error(f"处理平台结果失败: {e}")
+
+
+
+
+
+    @pyqtSlot()
+    def on_platform_config_updated(self):
+        """处理平台配置更新信号，执行热更新"""
+        try:
+            logging.info("【Worker】收到平台配置更新信号，开始热更新...")
+            logging.info(f"【Worker】当前线程ID: {QThread.currentThreadId()}")
+            logging.info(f"【Worker】Worker对象: {self}")
 
             # 重新初始化平台适配器
             self.init_platform_adapters()
 
-            logging.info("平台适配器热更新完成")
+            logging.info("【Worker】平台适配器热更新完成")
 
         except Exception as e:
-            logging.error(f"平台配置热更新失败: {e}")
+            logging.error(f"【Worker】平台配置热更新失败: {e}")
+
+    @pyqtSlot()
+    def test_signal_connection(self):
+        """测试信号连接是否正常"""
+        logging.info("【Worker】测试信号连接 - 收到测试信号！")
 
     def set_user_login_status(self, is_logged_in: bool):
         """【修复】设置用户登录状态"""
@@ -289,6 +317,8 @@ class MainWindow(QMainWindow):
 
     # 【V3.5新增】平台配置更新信号
     platform_config_updated = pyqtSignal()
+    # 【调试】测试信号
+    test_signal = pyqtSignal()
 
     def __init__(self):
         """【中央仓储架构】初始化主窗口 - 响应式UI"""
@@ -554,13 +584,13 @@ class MainWindow(QMainWindow):
 
         # 开发者代码输入框
         self.mahua_dev_code_input = QLineEdit()
-        self.mahua_dev_code_input.setPlaceholderText("例如：b2b4378b42df47518fc3511488d6d555")
+        # self.mahua_dev_code_input.setPlaceholderText("")
         layout.addRow("开发者代码 (dev_code):", self.mahua_dev_code_input)
 
         # 密钥输入框和显示/隐藏按钮
         secret_layout = QHBoxLayout()
         self.mahua_secret_key_input = QLineEdit()
-        self.mahua_secret_key_input.setPlaceholderText("例如：69eaf6b39da442809644dc2e3e233cf5")
+        # self.mahua_secret_key_input.setPlaceholderText("")
         self.mahua_secret_key_input.setEchoMode(QLineEdit.EchoMode.Password)  # 默认密码模式
 
         # 显示/隐藏密码按钮
@@ -603,7 +633,7 @@ class MainWindow(QMainWindow):
 
         # Token输入框
         self.haha_token_input = QLineEdit()
-        self.haha_token_input.setPlaceholderText("例如：64932f01040374d3a7dc9438a48c5178")
+        # self.haha_token_input.setPlaceholderText("")
         layout.addRow("Token:", self.haha_token_input)
 
         # 测试并应用按钮和结果标签
@@ -773,6 +803,7 @@ class MainWindow(QMainWindow):
                 }
             else:
                 logging.error(f"未知的平台类型: {platform_name}")
+                logging.error(f"📋 {platform_name}平台配置保存失败，返回False（未知平台类型）")
                 return False
 
             # 保存更新后的配置
@@ -781,10 +812,12 @@ class MainWindow(QMainWindow):
 
             logging.info(f"📋 更新后的完整配置: {existing_credentials}")
             logging.info(f"✅ {platform_name}平台凭证配置已保存到数据库")
+            logging.info(f"📋 {platform_name}平台配置保存成功，返回True")
             return True
 
         except Exception as e:
             logging.error(f"❌ 保存{platform_name}平台凭证配置失败: {e}")
+            logging.error(f"📋 {platform_name}平台配置保存异常，返回False: {e}")
             return False
 
     def connect_platform_config_signals(self):
@@ -945,7 +978,11 @@ class MainWindow(QMainWindow):
         try:
             if success:
                 # 【修复】测试成功，只保存哈哈平台配置
-                if self.save_specific_platform_credentials('haha'):
+                logging.info("📋 哈哈平台测试成功，开始保存配置...")
+                save_result = self.save_specific_platform_credentials('haha')
+                logging.info(f"📋 哈哈平台配置保存方法返回值: {save_result}")
+
+                if save_result:
                     self.haha_result_label.setText("✅ 连接成功并已应用！")
                     self.haha_result_label.setStyleSheet("color: #27ae60; font-weight: bold;")
 
@@ -955,10 +992,24 @@ class MainWindow(QMainWindow):
                         logging.info("哈哈平台停止状态已重置")
 
                     # 【V3.5升级】发射配置更新信号进行热更新
-                    self.platform_config_updated.emit()
+                    logging.info("📋 准备发射平台配置更新信号...")
+                    logging.info(f"📋 Worker线程运行状态: {self.worker_thread.isRunning() if hasattr(self, 'worker_thread') else 'N/A'}")
+                    logging.info(f"📋 Worker对象存在: {hasattr(self, 'worker') and self.worker is not None}")
+                    # 【修复】PyQt6中receivers方法调用方式不同，暂时跳过这个检查
+                    logging.info("📋 准备发射信号到Worker...")
+
+                    # 【调试】先测试信号连接是否正常
+                    logging.info("📋 测试信号连接...")
+                    self.test_signal.emit()
+
+                    # 【调试】延迟发射配置更新信号，确保测试信号先处理
+                    QTimer.singleShot(100, lambda: self.emit_config_signal())
+
+                    logging.info("📋 已安排配置更新信号发射")
 
                     logging.info("✅ 哈哈平台配置测试成功并已保存")
                 else:
+                    logging.warning("❌ 哈哈平台配置保存失败，信号未发射")
                     self.haha_result_label.setText("✅ 连接成功，但保存失败")
                     self.haha_result_label.setStyleSheet("color: #f39c12;")
             else:
@@ -2010,16 +2061,42 @@ class MainWindow(QMainWindow):
             if self.worker.mahua_adapter:
                 self.worker.mahua_adapter.signal_emitter.platform_credential_expired.connect(self.on_platform_credential_expired)
 
-            # 【V3.5新增】连接平台配置更新信号
-            self.platform_config_updated.connect(self.worker.on_platform_config_updated)
+            # 【V3.5新增】连接平台配置更新信号（使用队列连接确保线程安全）
+            logging.info("📋 准备连接平台配置更新信号...")
+            connection_result = self.platform_config_updated.connect(self.worker.on_platform_config_updated, Qt.ConnectionType.QueuedConnection)
+            logging.info(f"📋 信号连接结果: {connection_result}")
+            logging.info(f"📋 Worker对象: {self.worker}")
+            logging.info(f"📋 Worker线程: {self.worker_thread}")
+
+            # 【调试】连接测试信号
+            test_connection_result = self.test_signal.connect(self.worker.test_signal_connection, Qt.ConnectionType.QueuedConnection)
+            logging.info(f"📋 测试信号连接结果: {test_connection_result}")
 
             # 启动线程
+            logging.info("📋 准备启动Worker线程...")
             self.worker_thread.start()
+            logging.info(f"📋 Worker线程启动状态: {self.worker_thread.isRunning()}")
+            logging.info(f"📋 Worker线程ID: {self.worker_thread.currentThreadId()}")
 
             logging.info("后台工作线程已启动")
 
+            # 【调试】延迟测试信号连接
+            QTimer.singleShot(1000, self.test_signal_connection_delayed)
+
         except Exception as e:
             logging.error(f"启动后台工作线程失败: {e}")
+
+    def test_signal_connection_delayed(self):
+        """延迟测试信号连接"""
+        logging.info("📋 发射测试信号...")
+        self.test_signal.emit()
+        logging.info("📋 测试信号已发射")
+
+    def emit_config_signal(self):
+        """发射配置更新信号"""
+        logging.info("📋 现在发射配置更新信号...")
+        self.platform_config_updated.emit()
+        logging.info("✅ 平台配置更新信号已发射")
 
     def on_new_opportunity(self, opportunity_data):
         """处理新的抢单机会"""

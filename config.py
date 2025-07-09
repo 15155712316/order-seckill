@@ -12,6 +12,9 @@ NETWORK_CONFIG = {
     "verify_ssl": False    # 是否验证SSL证书
 }
 
+# --- 平台适配器配置 ---
+PLATFORM_MAX_AUTH_FAILURES = 5  # 平台凭证连续认证失败的最大次数阈值
+
 # --- 麻花平台配置 ---
 # 注意：敏感凭证信息（dev_code、secret_key）已移除，需要通过UI配置
 MAHUA_CHANNEL_ID = 'OP0002'  # 固定渠道ID，非敏感信息

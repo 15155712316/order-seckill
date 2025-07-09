@@ -15,6 +15,7 @@ from Crypto.Util.Padding import unpad
 from .base_adapter import BaseAdapter
 from ..database import DatabaseManager
 from PyQt6.QtCore import QObject, pyqtSignal
+from config import PLATFORM_MAX_AUTH_FAILURES
 
 
 class CredentialSignalEmitter(QObject):
@@ -45,7 +46,7 @@ class HahaAdapter(BaseAdapter):
 
         # 【新增】凭证失效检测
         self.auth_failure_count = 0  # 连续认证失败次数
-        self.max_auth_failures = 5   # 最大允许的连证失败次数
+        self.max_auth_failures = PLATFORM_MAX_AUTH_FAILURES   # 【修复】使用全局配置的最大失败次数阈值
         self.credential_expired = False  # 凭证是否已失效
 
         # 【修复】平台自动停止机制
