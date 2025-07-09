@@ -72,7 +72,7 @@ class Worker(QObject):
                 haha_config = credentials.get('haha', {})
                 if haha_config.get('token'):
                     # 【修复】使用真实的哈哈平台API配置，动态构建headers
-                    from config import API_URL, API_HEADERS_TEMPLATE, API_DATA_PAYLOAD
+                    from config import API_URL, API_HEADERS_TEMPLATE, API_DATA_PAYLOAD, NETWORK_CONFIG, MAX_ORDERS_CACHE
 
                     # 【修复】动态构建headers，使用用户输入的token
                     dynamic_headers = API_HEADERS_TEMPLATE.copy()
@@ -82,7 +82,9 @@ class Worker(QObject):
                         'token': haha_config['token'],
                         'api_url': API_URL,  # 使用config.py中的真实API地址
                         'headers': dynamic_headers,  # 【修复】使用动态构建的headers
-                        'data_payload': API_DATA_PAYLOAD  # 使用config.py中的真实payload
+                        'data_payload': API_DATA_PAYLOAD,  # 使用config.py中的真实payload
+                        'network_config': NETWORK_CONFIG,  # 【新增】网络配置
+                        'max_orders_cache': MAX_ORDERS_CACHE  # 【新增】缓存配置
                     }
                     self.haha_adapter = HahaAdapter(HAHA_PLATFORM_NAME, haha_full_config)
                     logging.info("✅ 哈哈平台适配器已使用数据库配置初始化")
@@ -91,13 +93,15 @@ class Worker(QObject):
                 mahua_config = credentials.get('mahua', {})
                 if mahua_config.get('dev_code') and mahua_config.get('secret_key'):
                     # 构建完整的麻花平台配置
-                    from config import MAHUA_LOGIN_URL, MAHUA_ORDER_LIST_URL, MAHUA_CHANNEL_ID
+                    from config import MAHUA_LOGIN_URL, MAHUA_ORDER_LIST_URL, MAHUA_CHANNEL_ID, NETWORK_CONFIG, MAX_ORDERS_CACHE
                     mahua_full_config = {
                         'dev_code': mahua_config['dev_code'],
                         'secret_key': mahua_config['secret_key'],
                         'channel_id': MAHUA_CHANNEL_ID,
                         'login_url': MAHUA_LOGIN_URL,
-                        'order_list_url': MAHUA_ORDER_LIST_URL
+                        'order_list_url': MAHUA_ORDER_LIST_URL,
+                        'network_config': NETWORK_CONFIG,  # 【新增】网络配置
+                        'max_orders_cache': MAX_ORDERS_CACHE  # 【新增】缓存配置
                     }
 
                     # 【调试】记录Worker实际使用的麻花平台凭证
@@ -325,7 +329,7 @@ class MainWindow(QMainWindow):
         # 【新增】初始化时禁用所有平台配置控件
         self.enable_platform_config_controls(False)
 
-        # 【新增】恢复平台配置
+        # 【修复】恢复平台配置
         self.load_platform_credentials()
 
         # 启动后台工作线程
@@ -829,7 +833,7 @@ class MainWindow(QMainWindow):
                 return
 
             # 【修复】创建真实API测试线程，使用config.py中的正确URL
-            from config import MAHUA_LOGIN_URL, MAHUA_ORDER_LIST_URL, MAHUA_CHANNEL_ID
+            from config import MAHUA_LOGIN_URL, MAHUA_ORDER_LIST_URL, MAHUA_CHANNEL_ID, NETWORK_CONFIG, MAX_ORDERS_CACHE
 
             # 【调试】构建配置字典
             test_config = {
@@ -837,7 +841,9 @@ class MainWindow(QMainWindow):
                 'secret_key': secret_key,
                 'channel_id': MAHUA_CHANNEL_ID,
                 'login_url': MAHUA_LOGIN_URL,  # 【修复】使用正确的API地址
-                'order_list_url': MAHUA_ORDER_LIST_URL  # 【修复】使用正确的API地址
+                'order_list_url': MAHUA_ORDER_LIST_URL,  # 【修复】使用正确的API地址
+                'network_config': NETWORK_CONFIG,  # 【新增】网络配置
+                'max_orders_cache': MAX_ORDERS_CACHE  # 【新增】缓存配置
             }
 
             logging.info(f"📋 配置字典构建完成:")
@@ -878,7 +884,7 @@ class MainWindow(QMainWindow):
                 return
 
             # 【V3.5升级】创建真实API测试线程
-            from config import API_URL, API_HEADERS_TEMPLATE, API_DATA_PAYLOAD
+            from config import API_URL, API_HEADERS_TEMPLATE, API_DATA_PAYLOAD, NETWORK_CONFIG, MAX_ORDERS_CACHE
 
             # 【修复】动态构建headers，使用用户输入的token
             dynamic_headers = API_HEADERS_TEMPLATE.copy()
@@ -888,7 +894,9 @@ class MainWindow(QMainWindow):
                 'token': token,
                 'api_url': API_URL,  # 【修复】使用真实的哈哈平台API地址
                 'headers': dynamic_headers,  # 【修复】使用动态构建的headers
-                'data_payload': API_DATA_PAYLOAD  # 【修复】使用真实的payload
+                'data_payload': API_DATA_PAYLOAD,  # 【修复】使用真实的payload
+                'network_config': NETWORK_CONFIG,  # 【新增】网络配置
+                'max_orders_cache': MAX_ORDERS_CACHE  # 【新增】缓存配置
             })
             self.haha_test_thread.test_result.connect(self.on_haha_test_result)
             self.haha_test_thread.start()

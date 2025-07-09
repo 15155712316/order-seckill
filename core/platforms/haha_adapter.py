@@ -14,7 +14,6 @@ from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
 from .base_adapter import BaseAdapter
 from ..database import DatabaseManager
-from config import MAX_ORDERS_CACHE
 from PyQt6.QtCore import QObject, pyqtSignal
 
 
@@ -38,7 +37,8 @@ class HahaAdapter(BaseAdapter):
         self.api_data_payload = self.config.get('data_payload', {})
 
         # 用于去重的双端队列，最多保存指定数量的已见过的订单ID
-        self.seen_order_ids = collections.deque(maxlen=MAX_ORDERS_CACHE)
+        max_cache_size = self.config.get('max_orders_cache', 500)  # 默认500
+        self.seen_order_ids = collections.deque(maxlen=max_cache_size)
 
         # 初始化数据库管理器
         self.db_manager = DatabaseManager()
@@ -63,18 +63,20 @@ class HahaAdapter(BaseAdapter):
                 return False, "配置信息不完整，请检查API地址和Token"
 
             # 【修复】使用网络配置进行SSL和超时设置
-            from config import NETWORK_CONFIG
             import ssl
+
+            # 从config字典获取网络配置
+            network_config = self.config.get('network_config', {})
 
             # 创建SSL上下文
             ssl_context = None
-            if not NETWORK_CONFIG.get("verify_ssl", True):
+            if not network_config.get("verify_ssl", True):
                 ssl_context = ssl.create_default_context()
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
 
             # 创建超时配置
-            timeout = aiohttp.ClientTimeout(total=NETWORK_CONFIG.get("timeout", 30))
+            timeout = aiohttp.ClientTimeout(total=network_config.get("timeout", 30))
 
             # 使用真实API进行测试
             connector = aiohttp.TCPConnector(ssl=ssl_context)
@@ -84,13 +86,52 @@ class HahaAdapter(BaseAdapter):
                 connector=connector
             ) as session:
                 async with session.post(self.api_url, data=self.api_data_payload) as response:
-                    # 以HTTP状态码为第一判断依据
-                    if response.status == 200:
+                    response_text = await response.text()
+
+                    # 1. 检查HTTP状态码
+                    if response.status != 200:
+                        if response.status in [401, 403]:
+                            return False, "凭证无效，请检查Token后重试"
+                        else:
+                            return False, f"连接失败，HTTP状态码: {response.status}"
+
+                    # 2. 【修复】检查响应内容，像fetch_and_process一样
+                    try:
+                        api_response = json.loads(response_text)
+
+                        # 检查响应状态（根据实际API响应结构调整）
+                        if isinstance(api_response, dict):
+                            status = api_response.get('status') or api_response.get('code')
+                            message = api_response.get('message') or api_response.get('msg', '')
+
+                            # 检查API返回的错误状态
+                            if status and status != 200:
+                                return False, f"Token验证失败: {message or f'API状态码{status}'}"
+
+                            # 检查错误关键词
+                            error_keywords = ['error', 'fail', 'invalid', 'unauthorized', 'token', 'auth', 'login', 'forbidden']
+                            if message and any(keyword in str(message).lower() for keyword in error_keywords):
+                                return False, f"Token验证失败: {message}"
+
+                        # 3. 【新增】尝试验证数据结构，确保Token真正有效
+                        if isinstance(api_response, dict):
+                            # 检查是否有data字段
+                            data = api_response.get('data')
+                            if data is None:
+                                return False, "Token验证失败: API响应中没有数据字段"
+
                         return True, "凭证有效，连接成功！"
-                    elif response.status in [401, 403]:
-                        return False, "凭证无效，请检查Token后重试"
-                    else:
-                        return False, f"连接失败，HTTP状态码: {response.status}"
+
+                    except json.JSONDecodeError:
+                        # JSON解析失败，但HTTP状态码200
+                        # 可能是其他格式的响应，需要进一步检查
+                        if len(response_text) == 0:
+                            return False, "Token验证失败: API返回空响应"
+                        elif 'error' in response_text.lower() or 'fail' in response_text.lower():
+                            return False, f"Token验证失败: {response_text[:100]}"
+                        else:
+                            # 假设是成功的非JSON响应
+                            return True, "凭证有效，连接成功！"
 
         except Exception as e:
             logging.error(f"测试{self.name}平台凭证异常: {e}")
@@ -132,18 +173,20 @@ class HahaAdapter(BaseAdapter):
                 }
 
             # 【修复】使用网络配置进行SSL和超时设置
-            from config import NETWORK_CONFIG
             import ssl
+
+            # 从config字典获取网络配置
+            network_config = self.config.get('network_config', {})
 
             # 创建SSL上下文
             ssl_context = None
-            if not NETWORK_CONFIG.get("verify_ssl", True):
+            if not network_config.get("verify_ssl", True):
                 ssl_context = ssl.create_default_context()
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
 
             # 创建超时配置
-            timeout = aiohttp.ClientTimeout(total=NETWORK_CONFIG.get("timeout", 30))
+            timeout = aiohttp.ClientTimeout(total=network_config.get("timeout", 30))
 
             connector = aiohttp.TCPConnector(ssl=ssl_context)
             async with aiohttp.ClientSession(

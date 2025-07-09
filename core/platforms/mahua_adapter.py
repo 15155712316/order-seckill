@@ -12,7 +12,6 @@ import collections
 import aiohttp
 from .base_adapter import BaseAdapter
 from ..database import DatabaseManager
-from config import MAX_ORDERS_CACHE
 from PyQt6.QtCore import QObject, pyqtSignal
 
 
@@ -52,7 +51,8 @@ class MahuaAdapter(BaseAdapter):
         self.signal_emitter = CredentialSignalEmitter()
 
         # 用于去重的双端队列，最多保存指定数量的已见过的订单ID
-        self.seen_order_ids = collections.deque(maxlen=MAX_ORDERS_CACHE)
+        max_cache_size = self.config.get('max_orders_cache', 500)  # 默认500
+        self.seen_order_ids = collections.deque(maxlen=max_cache_size)
 
         # 初始化数据库管理器
         self.db_manager = DatabaseManager()
@@ -138,18 +138,20 @@ class MahuaAdapter(BaseAdapter):
                 logging.info(f"    {key}: '{value}'")
 
             # 【修复】使用网络配置进行SSL和超时设置
-            from config import NETWORK_CONFIG
             import ssl
+
+            # 从config字典获取网络配置
+            network_config = self.config.get('network_config', {})
 
             # 创建SSL上下文
             ssl_context = None
-            if not NETWORK_CONFIG.get("verify_ssl", True):
+            if not network_config.get("verify_ssl", True):
                 ssl_context = ssl.create_default_context()
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
 
             # 创建超时配置
-            timeout = aiohttp.ClientTimeout(total=NETWORK_CONFIG.get("timeout", 30))
+            timeout = aiohttp.ClientTimeout(total=network_config.get("timeout", 30))
 
             connector = aiohttp.TCPConnector(ssl=ssl_context)
             async with aiohttp.ClientSession(
@@ -345,18 +347,20 @@ class MahuaAdapter(BaseAdapter):
             }
 
             # 【修复】使用网络配置进行SSL和超时设置
-            from config import NETWORK_CONFIG
             import ssl
+
+            # 从config字典获取网络配置
+            network_config = self.config.get('network_config', {})
 
             # 创建SSL上下文
             ssl_context = None
-            if not NETWORK_CONFIG.get("verify_ssl", True):
+            if not network_config.get("verify_ssl", True):
                 ssl_context = ssl.create_default_context()
                 ssl_context.check_hostname = False
                 ssl_context.verify_mode = ssl.CERT_NONE
 
             # 创建超时配置
-            timeout = aiohttp.ClientTimeout(total=NETWORK_CONFIG.get("timeout", 30))
+            timeout = aiohttp.ClientTimeout(total=network_config.get("timeout", 30))
 
             connector = aiohttp.TCPConnector(ssl=ssl_context)
             async with aiohttp.ClientSession(
