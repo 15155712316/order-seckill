@@ -259,17 +259,40 @@ class Worker(QObject):
                             match_result = self.engine.check_order(order)
 
                             if match_result:
-                                # 构建机会数据
-                                opportunity_data = {
-                                    'order': order,
-                                    'rule_name': match_result.get('rule_name', '未知规则'),
-                                    'total_profit': match_result.get('total_profit', 0),
-                                    'seat_count': match_result.get('seat_count', 0),
-                                    'platform': platform_name
-                                }
+                                # ------------------- 恢复至经过验证的、标准的V1版数据打包逻辑开始 -------------------
+                                try:
+                                    # 【关键修复】构建与旧版完全一致的、结构完整的opportunity_data字典
+                                    opportunity_data = {
+                                        # 平台名称
+                                        'platform': platform_name,
 
-                                # 发射新机会信号
-                                self.new_opportunity.emit(opportunity_data)
+                                        # 【关键修复】使用 'profit' 作为键，其值来自 'total_profit'
+                                        'profit': match_result.get('total_profit', 0.0),
+
+                                        # 票数
+                                        'seat_count': match_result.get('seat_count', 0),
+
+                                        # 规则名称
+                                        'rule_name': match_result.get('rule_name', '未知规则'),
+
+                                        # 【关键修复】订单详情必须来自 match_result['order_details']
+                                        'order': match_result.get('order_details', {}),
+
+                                        # 【关键修复】必须包含 'type' 字段
+                                        'type': match_result.get('strategy_type', 'keyword')
+                                    }
+
+                                    # 发射信号到主窗口
+                                    self.new_opportunity.emit(opportunity_data)
+
+                                    # 记录成功的日志
+                                    logging.info(f"成功打包并发送标准格式的新机会: {opportunity_data}")
+
+                                except KeyError as e:
+                                    logging.error(f"打包机会数据时发生KeyError: 缺少键 {e}。原始match_result: {match_result}")
+                                except Exception as e:
+                                    logging.error(f"打包机会数据时发生未知异常: {e}。原始match_result: {match_result}")
+                                # ------------------- 恢复至经过验证的、标准的V1版数据打包逻辑结束 -------------------
                         except Exception as e:
                             logging.error(f"处理订单时发生错误: {e}")
 
