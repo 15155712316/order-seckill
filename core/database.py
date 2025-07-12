@@ -2,13 +2,18 @@
 # -*- coding: utf-8 -*-
 """
 数据库管理模块 - 负责SQLite数据库的所有操作
+V2.0 重构版本：添加连接池优化、事务管理、性能监控
 """
 
 import sqlite3
 import json
 import logging
+import threading
+import time
 from datetime import datetime
 from typing import List, Dict, Any
+from queue import Queue, Empty
+from contextlib import contextmanager
 
 # 导入时区相关模块
 try:
@@ -52,116 +57,253 @@ def get_china_time() -> str:
         return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
 
-class DatabaseManager:
-    """数据库管理类，负责订单数据的存储和查询"""
+class ConnectionPool:
+    """简化版SQLite连接池"""
     
-    def __init__(self, db_path: str = "orders.db"):
+    def __init__(self, db_path: str, max_size: int = 5):
+        self.db_path = db_path
+        self.max_size = max_size
+        self.pool = Queue(maxsize=max_size)
+        self.lock = threading.Lock()
+        self._create_connections()
+    
+    def _create_connections(self):
+        """创建初始连接"""
+        for _ in range(self.max_size):
+            conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            conn.row_factory = sqlite3.Row
+            # SQLite性能优化设置
+            conn.execute("PRAGMA journal_mode=WAL")  # WAL模式提高并发性
+            conn.execute("PRAGMA synchronous=NORMAL")  # 平衡安全性和性能
+            conn.execute("PRAGMA cache_size=10000")  # 增加缓存大小
+            conn.execute("PRAGMA temp_store=MEMORY")  # 临时表使用内存
+            self.pool.put(conn)
+    
+    def get_connection(self, timeout: float = 5.0):
+        """获取连接"""
+        try:
+            return self.pool.get(timeout=timeout)
+        except Empty:
+            raise RuntimeError("数据库连接池已满，无法获取连接")
+    
+    def return_connection(self, conn):
+        """归还连接"""
+        if conn:
+            self.pool.put(conn)
+    
+    def close_all(self):
+        """关闭所有连接"""
+        while not self.pool.empty():
+            try:
+                conn = self.pool.get_nowait()
+                conn.close()
+            except Empty:
+                break
+
+
+class PerformanceMonitor:
+    """数据库性能监控器"""
+    
+    def __init__(self):
+        self.query_times = []
+        self.slow_query_threshold = 1.0  # 1秒
+        self.lock = threading.Lock()
+    
+    def record_query(self, query: str, duration: float):
+        """记录查询性能"""
+        with self.lock:
+            self.query_times.append((query, duration, time.time()))
+            # 只保留最近100条记录
+            if len(self.query_times) > 100:
+                self.query_times.pop(0)
+            
+            # 记录慢查询
+            if duration > self.slow_query_threshold:
+                logging.warning(f"慢查询检测: {query[:100]}... 耗时 {duration:.2f}秒")
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """获取性能统计"""
+        with self.lock:
+            if not self.query_times:
+                return {"avg_time": 0, "total_queries": 0, "slow_queries": 0}
+            
+            times = [t[1] for t in self.query_times]
+            slow_count = sum(1 for t in times if t > self.slow_query_threshold)
+            
+            return {
+                "avg_time": sum(times) / len(times),
+                "total_queries": len(times),
+                "slow_queries": slow_count,
+                "max_time": max(times),
+                "min_time": min(times)
+            }
+
+
+class DatabaseManager:
+    """数据库管理类V2.0 - 优化版本，负责订单数据的存储和查询"""
+    
+    def __init__(self, db_path: str = "orders.db", pool_size: int = 5):
         """
         初始化数据库管理器
         
         Args:
             db_path (str): 数据库文件路径，默认为 orders.db
+            pool_size (int): 连接池大小，默认为5
         """
         self.db_path = db_path
-        self.connection = None
+        self.pool = ConnectionPool(db_path, pool_size)
+        self.monitor = PerformanceMonitor()
         
         try:
-            # 连接到SQLite数据库
-            self.connection = sqlite3.connect(self.db_path, check_same_thread=False)
-            self.connection.row_factory = sqlite3.Row  # 使查询结果可以像字典一样访问
-            
             # 创建数据表
             self._create_tables()
-            
-            logging.info(f"数据库管理器初始化完成，数据库文件: {self.db_path}")
+            logging.info(f"数据库管理器V2.0初始化完成，数据库文件: {self.db_path}，连接池大小: {pool_size}")
             
         except Exception as e:
             logging.error(f"数据库初始化失败: {e}")
             raise
     
+    @contextmanager
+    def get_connection(self):
+        """连接管理上下文管理器"""
+        conn = None
+        start_time = time.time()
+        try:
+            conn = self.pool.get_connection()
+            yield conn
+        finally:
+            duration = time.time() - start_time
+            self.monitor.record_query("get_connection", duration)
+            if conn:
+                self.pool.return_connection(conn)
+    
+    def execute_query(self, query: str, params: tuple = None, fetch: str = None):
+        """执行SQL查询的通用方法"""
+        start_time = time.time()
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                if params:
+                    cursor.execute(query, params)
+                else:
+                    cursor.execute(query)
+                
+                if fetch == 'all':
+                    result = cursor.fetchall()
+                elif fetch == 'one':
+                    result = cursor.fetchone()
+                elif fetch == 'count':
+                    result = cursor.rowcount
+                else:
+                    result = cursor.rowcount
+                
+                conn.commit()
+                return result
+        finally:
+            duration = time.time() - start_time
+            self.monitor.record_query(query[:100], duration)
+    
+    def execute_many(self, query: str, params_list: List[tuple]):
+        """批量执行SQL查询"""
+        start_time = time.time()
+        try:
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.executemany(query, params_list)
+                conn.commit()
+                return cursor.rowcount
+        finally:
+            duration = time.time() - start_time
+            self.monitor.record_query(f"batch:{query[:50]}", duration)
+    
+    def get_performance_stats(self) -> Dict[str, Any]:
+        """获取数据库性能统计信息"""
+        return self.monitor.get_stats()
+    
     def _create_tables(self):
         """【中央仓储架构】创建所有数据表：订单表、白名单表、策略表"""
         try:
-            cursor = self.connection.cursor()
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
 
-            # 创建orders表
-            create_orders_table_sql = """
-            CREATE TABLE IF NOT EXISTS orders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                order_id TEXT UNIQUE NOT NULL,
-                bidding_price REAL NOT NULL,
-                seat_count INTEGER NOT NULL,
-                city TEXT NOT NULL,
-                cinema_name TEXT NOT NULL,
-                hall_type TEXT NOT NULL,
-                movie_name TEXT NOT NULL,
-                show_timestamp TEXT,
-                platform TEXT NOT NULL,
-                raw_data TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
+                # 创建orders表
+                create_orders_table_sql = """
+                CREATE TABLE IF NOT EXISTS orders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    order_id TEXT UNIQUE NOT NULL,
+                    bidding_price REAL NOT NULL,
+                    seat_count INTEGER NOT NULL,
+                    city TEXT NOT NULL,
+                    cinema_name TEXT NOT NULL,
+                    hall_type TEXT NOT NULL,
+                    movie_name TEXT NOT NULL,
+                    show_timestamp TEXT,
+                    platform TEXT NOT NULL,
+                    raw_data TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
 
-            cursor.execute(create_orders_table_sql)
+                cursor.execute(create_orders_table_sql)
 
-            # 创建白名单影院表
-            create_whitelist_table_sql = """
-            CREATE TABLE IF NOT EXISTS whitelist_cinemas (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                policy_id TEXT NOT NULL,
-                cinema_name TEXT NOT NULL,
-                created_at TEXT NOT NULL
-            )
-            """
+                # 创建白名单影院表
+                create_whitelist_table_sql = """
+                CREATE TABLE IF NOT EXISTS whitelist_cinemas (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    policy_id TEXT NOT NULL,
+                    cinema_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
 
-            cursor.execute(create_whitelist_table_sql)
+                cursor.execute(create_whitelist_table_sql)
 
-            # 【核心新增】创建策略表 - 取代rules.json的中央仓储
-            create_policies_table_sql = """
-            CREATE TABLE IF NOT EXISTS policies (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                type TEXT NOT NULL,
-                policy_order INTEGER NOT NULL,
-                config TEXT NOT NULL,
-                is_enabled INTEGER NOT NULL DEFAULT 1,
-                created_at TIMESTAMP NOT NULL
-            )
-            """
+                # 【核心新增】创建策略表 - 取代rules.json的中央仓储
+                create_policies_table_sql = """
+                CREATE TABLE IF NOT EXISTS policies (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    type TEXT NOT NULL,
+                    policy_order INTEGER NOT NULL,
+                    config TEXT NOT NULL,
+                    is_enabled INTEGER NOT NULL DEFAULT 1,
+                    created_at TIMESTAMP NOT NULL
+                )
+                """
 
-            cursor.execute(create_policies_table_sql)
+                cursor.execute(create_policies_table_sql)
 
-            # 【守护者之盾】创建用户设置表
-            create_settings_table_sql = """
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-            """
+                # 【守护者之盾】创建用户设置表
+                create_settings_table_sql = """
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+                """
 
-            cursor.execute(create_settings_table_sql)
+                cursor.execute(create_settings_table_sql)
 
-            # 创建索引以提高查询性能
-            index_sqls = [
-                # orders表索引
-                "CREATE INDEX IF NOT EXISTS idx_order_id ON orders(order_id)",
-                "CREATE INDEX IF NOT EXISTS idx_created_at ON orders(created_at)",
-                "CREATE INDEX IF NOT EXISTS idx_cinema_name ON orders(cinema_name)",
-                "CREATE INDEX IF NOT EXISTS idx_city ON orders(city)",
-                # whitelist_cinemas表索引
-                "CREATE INDEX IF NOT EXISTS idx_policy_id ON whitelist_cinemas(policy_id)",
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_cinema ON whitelist_cinemas(policy_id, cinema_name)",
-                # 【新增】policies表索引
-                "CREATE INDEX IF NOT EXISTS idx_policy_order ON policies(policy_order)",
-                "CREATE INDEX IF NOT EXISTS idx_policy_type ON policies(type)",
-                "CREATE INDEX IF NOT EXISTS idx_policy_enabled ON policies(is_enabled)"
-            ]
+                # 创建索引以提高查询性能
+                index_sqls = [
+                    # orders表索引
+                    "CREATE INDEX IF NOT EXISTS idx_order_id ON orders(order_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_created_at ON orders(created_at)",
+                    "CREATE INDEX IF NOT EXISTS idx_cinema_name ON orders(cinema_name)",
+                    "CREATE INDEX IF NOT EXISTS idx_city ON orders(city)",
+                    # whitelist_cinemas表索引
+                    "CREATE INDEX IF NOT EXISTS idx_policy_id ON whitelist_cinemas(policy_id)",
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_policy_cinema ON whitelist_cinemas(policy_id, cinema_name)",
+                    # 【新增】policies表索引
+                    "CREATE INDEX IF NOT EXISTS idx_policy_order ON policies(policy_order)",
+                    "CREATE INDEX IF NOT EXISTS idx_policy_type ON policies(type)",
+                    "CREATE INDEX IF NOT EXISTS idx_policy_enabled ON policies(is_enabled)"
+                ]
 
-            for index_sql in index_sqls:
-                cursor.execute(index_sql)
+                for index_sql in index_sqls:
+                    cursor.execute(index_sql)
 
-            self.connection.commit()
-            logging.info("数据表创建完成")
+                conn.commit()
+                logging.info("数据表创建完成")
 
         except Exception as e:
             logging.error(f"创建数据表失败: {e}")
@@ -169,7 +311,7 @@ class DatabaseManager:
     
     def save_orders(self, orders: List[Dict[str, Any]], platform_name: str) -> int:
         """
-        保存订单列表到数据库
+        保存订单列表到数据库 - 优化版本，使用批量插入
 
         Args:
             orders (List[Dict[str, Any]]): 标准化后的订单列表
@@ -182,9 +324,7 @@ class DatabaseManager:
             return 0
         
         try:
-            cursor = self.connection.cursor()
-            
-            # 准备插入语句
+            # 准备批量插入数据
             insert_sql = """
             INSERT OR IGNORE INTO orders (
                 order_id, bidding_price, seat_count, city, cinema_name,
@@ -192,7 +332,8 @@ class DatabaseManager:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """
             
-            inserted_count = 0
+            insert_data = []
+            china_time = get_china_time()
             
             for order in orders:
                 try:
@@ -209,25 +350,36 @@ class DatabaseManager:
                     # 将原始数据转换为JSON字符串
                     raw_data = json.dumps(order.get('raw_data', {}), ensure_ascii=False)
 
-                    # 获取当前的中国时区时间
-                    china_time = get_china_time()
-
-                    # 执行插入
-                    cursor.execute(insert_sql, (
+                    insert_data.append((
                         order_id, bidding_price, seat_count, city, cinema_name,
                         hall_type, movie_name, show_timestamp, platform_name, raw_data, china_time
                     ))
-                    
-                    # 检查是否实际插入了数据（rowcount > 0 表示插入成功）
-                    if cursor.rowcount > 0:
-                        inserted_count += 1
                         
                 except Exception as e:
-                    logging.warning(f"插入订单 {order.get('order_id', 'unknown')} 失败: {e}")
+                    logging.warning(f"准备插入订单 {order.get('order_id', 'unknown')} 失败: {e}")
                     continue
             
-            # 提交事务
-            self.connection.commit()
+            if not insert_data:
+                return 0
+            
+            # 批量执行插入
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 获取插入前的订单总数
+                cursor.execute("SELECT COUNT(*) FROM orders")
+                count_before = cursor.fetchone()[0]
+                
+                # 批量插入
+                cursor.executemany(insert_sql, insert_data)
+                
+                # 获取插入后的订单总数
+                cursor.execute("SELECT COUNT(*) FROM orders")
+                count_after = cursor.fetchone()[0]
+                
+                conn.commit()
+                
+                inserted_count = count_after - count_before
             
             if inserted_count > 0:
                 logging.info(f"✅ 成功保存 {inserted_count} 条新订单到数据库")
@@ -238,14 +390,11 @@ class DatabaseManager:
             
         except Exception as e:
             logging.error(f"保存订单到数据库失败: {e}")
-            # 回滚事务
-            if self.connection:
-                self.connection.rollback()
             return 0
     
     def get_recent_orders(self, limit: int = 100) -> List[Dict[str, Any]]:
         """
-        获取最近的订单记录
+        获取最近的订单记录 - 优化版本
         
         Args:
             limit (int): 返回的记录数量限制
@@ -254,16 +403,13 @@ class DatabaseManager:
             List[Dict[str, Any]]: 订单记录列表
         """
         try:
-            cursor = self.connection.cursor()
-            
             query_sql = """
             SELECT * FROM orders 
             ORDER BY created_at DESC 
             LIMIT ?
             """
             
-            cursor.execute(query_sql, (limit,))
-            rows = cursor.fetchall()
+            rows = self.execute_query(query_sql, (limit,), fetch='all')
             
             # 转换为字典列表
             orders = []
@@ -284,16 +430,14 @@ class DatabaseManager:
     
     def get_orders_count(self) -> int:
         """
-        获取数据库中的订单总数
+        获取数据库中的订单总数 - 优化版本
 
         Returns:
             int: 订单总数
         """
         try:
-            cursor = self.connection.cursor()
-            cursor.execute("SELECT COUNT(*) FROM orders")
-            count = cursor.fetchone()[0]
-            return count
+            result = self.execute_query("SELECT COUNT(*) FROM orders", fetch='one')
+            return result[0] if result else 0
 
         except Exception as e:
             logging.error(f"查询订单总数失败: {e}")
@@ -301,14 +445,12 @@ class DatabaseManager:
 
     def get_all_orders_as_dicts(self) -> List[Dict[str, Any]]:
         """
-        获取数据库中的所有订单数据，并转换为字典列表
+        获取数据库中的所有订单数据，并转换为字典列表 - 优化版本
 
         Returns:
             List[Dict[str, Any]]: 包含所有订单数据的字典列表
         """
         try:
-            cursor = self.connection.cursor()
-
             # 查询所有订单数据，按创建时间倒序排列
             query_sql = """
             SELECT id, order_id, bidding_price, seat_count, city, cinema_name,
@@ -317,8 +459,7 @@ class DatabaseManager:
             ORDER BY created_at DESC
             """
 
-            cursor.execute(query_sql)
-            rows = cursor.fetchall()
+            rows = self.execute_query(query_sql, fetch='all')
 
             # 转换为字典列表
             orders = []
@@ -672,13 +813,13 @@ class DatabaseManager:
             return default_value
 
     def close(self):
-        """关闭数据库连接"""
-        if self.connection:
+        """关闭数据库连接池"""
+        if hasattr(self, 'pool'):
             try:
-                self.connection.close()
-                logging.info("数据库连接已关闭")
+                self.pool.close_all()
+                logging.info("数据库连接池已关闭")
             except Exception as e:
-                logging.error(f"关闭数据库连接失败: {e}")
+                logging.error(f"关闭数据库连接池失败: {e}")
 
     def __del__(self):
         """析构函数，确保数据库连接被正确关闭"""
