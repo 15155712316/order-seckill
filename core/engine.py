@@ -188,9 +188,29 @@ class RuleEngine(QObject):
             logging.error(f"错误：从数据库加载策略时发生错误 - {e}")
             self.rules = []
 
-    def check_order(self, order):
+    def check_order(self, order, platform_name: str = None):
         """
-        检查订单是否符合规则条件
+        检查订单是否符合规则条件 - 增强版，包含调试记录功能
+
+        Args:
+            order (dict): 代表订单的字典
+            platform_name (str): 平台名称，用于调试记录
+
+        Returns:
+            dict: 如果匹配成功且利润达标，返回包含利润和规则信息的字典
+            None: 如果没有匹配的规则或利润不达标
+        """
+        result = self._check_order_core(order)
+        
+        # 如果匹配成功，保存调试记录
+        if result and platform_name:
+            self._save_match_debug_record(order, result, platform_name)
+        
+        return result
+
+    def _check_order_core(self, order):
+        """
+        核心订单检查逻辑（原check_order方法）
 
         Args:
             order (dict): 代表订单的字典，包含以下字段：
@@ -240,6 +260,11 @@ class RuleEngine(QObject):
                     whitelist_policy = WhitelistPolicy(rule, whitelist_cinemas)
                     result = whitelist_policy.check(order)
                     if result:
+                        # 为白名单策略添加额外的调试信息
+                        result['rule_id'] = rule.get('rule_id')
+                        result['match_conditions'] = match_conditions
+                        result['hall_logic'] = hall_logic
+                        result['profit_logic'] = profit_logic
                         return result  # 白名单策略匹配成功，直接返回结果
                     else:
                         continue  # 白名单策略不匹配，跳到下一条规则
@@ -326,13 +351,23 @@ class RuleEngine(QObject):
 
             # 判断总利润是否达标
             if total_profit >= min_profit_threshold:
-                # 利润达标，返回匹配结果
+                # 利润达标，返回匹配结果（包含详细调试信息）
                 return {
                     'total_profit': total_profit,
                     'seat_count': order_seat_count,
                     'rule_name': rule.get('rule_name', '未命名规则'),
+                    'rule_id': rule.get('rule_id'),
                     'order_details': order.copy(),  # 返回订单详情的副本
-                    'strategy_type': 'keyword'  # 标识策略类型
+                    'strategy_type': 'keyword',  # 标识策略类型
+                    # 【调试信息】详细匹配过程
+                    'match_conditions': match_conditions,
+                    'hall_logic': hall_logic,
+                    'profit_logic': profit_logic,
+                    'calculation_details': {
+                        'hall_cost': hall_cost,
+                        'single_ticket_profit': single_ticket_profit,
+                        'min_profit_threshold': min_profit_threshold
+                    }
                 }
 
         # 如果循环正常结束，说明没有任何规则匹配成功
@@ -455,20 +490,9 @@ class RuleEngine(QObject):
             # 保存到数据库
             success = self.db_manager.save_policy(policy)
             if success:
-                # 更新内存中的策略
-                policy_id = policy.get('rule_id')
-                for i, existing_policy in enumerate(self.rules):
-                    if existing_policy.get('rule_id') == policy_id:
-                        self.rules[i] = policy
-                        break
-
-                # 如果是白名单策略，更新缓存
-                match_conditions = policy.get('match_conditions', {})
-                if match_conditions.get('match_mode') == 'whitelist':
-                    if policy_id:
-                        # 重新加载白名单缓存
-                        cinema_set = self.db_manager.load_cinemas_for_policy(policy_id)
-                        self.whitelist_cache[policy_id] = cinema_set
+                # 【修复】更强健的内存更新逻辑 - 直接重新加载避免缓存不一致
+                logging.info(f"策略保存成功，重新加载所有策略以确保数据一致性")
+                self._load_policies()  # 重新从数据库加载所有策略，确保数据一致
 
                 # 发射更新信号
                 self.policies_updated.emit()
@@ -542,3 +566,113 @@ class RuleEngine(QObject):
         except Exception as e:
             logging.error(f"重新加载策略失败: {e}")
             return False
+
+    def _save_match_debug_record(self, order: Dict, match_result: Dict, platform_name: str):
+        """
+        保存匹配成功的调试记录到数据库
+        
+        Args:
+            order (Dict): 原始订单数据
+            match_result (Dict): 匹配结果
+            platform_name (str): 平台名称
+        """
+        try:
+            import uuid
+            import time
+            
+            # 生成唯一记录ID
+            record_id = f"{platform_name}_{int(time.time() * 1000)}_{str(uuid.uuid4())[:8]}"
+            
+            # 构建匹配详情
+            match_details = {
+                'matched_rule_name': match_result.get('rule_name'),
+                'strategy_type': match_result.get('strategy_type'),
+                'order_data_summary': {
+                    'order_id': order.get('order_id'),
+                    'city': order.get('city'),
+                    'cinema_name': order.get('cinema_name'),
+                    'hall_type': order.get('hall_type'),
+                    'movie_name': order.get('movie_name'),
+                    'bidding_price': order.get('bidding_price'),
+                    'seat_count': order.get('seat_count'),
+                    'original_price': order.get('original_price'),
+                    'show_time': order.get('show_time')
+                },
+                'match_conditions_used': match_result.get('match_conditions', {}),
+                'hall_logic_applied': match_result.get('hall_logic', {}),
+                'profit_logic_settings': match_result.get('profit_logic', {}),
+                'calculation_breakdown': match_result.get('calculation_details', {}),
+                'final_result': {
+                    'total_profit': match_result.get('total_profit'),
+                    'seat_count': match_result.get('seat_count'),
+                    'profit_per_ticket': match_result.get('total_profit', 0) / max(match_result.get('seat_count', 1), 1)
+                }
+            }
+            
+            # 利润计算详情
+            profit_calculation = {
+                'bidding_price': order.get('bidding_price', 0),
+                'hall_cost': match_result.get('calculation_details', {}).get('hall_cost', 0),
+                'single_ticket_profit': match_result.get('calculation_details', {}).get('single_ticket_profit', 0),
+                'seat_count': match_result.get('seat_count', 1),
+                'total_profit': match_result.get('total_profit', 0),
+                'min_profit_threshold': match_result.get('calculation_details', {}).get('min_profit_threshold', 0),
+                'profit_margin': match_result.get('total_profit', 0) - match_result.get('calculation_details', {}).get('min_profit_threshold', 0),
+                'calculation_formula': f"({order.get('bidding_price', 0)} - {match_result.get('calculation_details', {}).get('hall_cost', 0)}) × {match_result.get('seat_count', 1)} = {match_result.get('total_profit', 0)}"
+            }
+            
+            # 构建完整的匹配记录数据
+            match_record_data = {
+                'record_id': record_id,
+                'order_id': order.get('order_id', ''),
+                'rule_id': match_result.get('rule_id', ''),
+                'rule_name': match_result.get('rule_name', ''),
+                'rule_type': match_result.get('strategy_type', ''),
+                'match_result': 'SUCCESS',
+                'platform_name': platform_name,
+                'order_data': order,
+                'match_details': match_details,
+                'profit_calculation': profit_calculation
+            }
+            
+            # 保存到数据库
+            success = self.db_manager.save_match_record(match_record_data)
+            
+            if success:
+                logging.debug(f"✅ 保存匹配调试记录成功: {record_id}")
+            else:
+                logging.warning(f"❌ 保存匹配调试记录失败: {record_id}")
+                
+        except Exception as e:
+            logging.error(f"保存匹配调试记录异常: {e}")
+            import traceback
+            logging.error(f"异常堆栈: {traceback.format_exc()}")
+
+    def get_debug_statistics(self) -> Dict[str, Any]:
+        """
+        获取调试统计信息
+        
+        Returns:
+            Dict[str, Any]: 调试统计数据
+        """
+        try:
+            return self.db_manager.get_match_statistics()
+        except Exception as e:
+            logging.error(f"获取调试统计失败: {e}")
+            return {}
+
+    def query_match_records(self, **kwargs) -> List[Dict[str, Any]]:
+        """
+        查询匹配记录
+        
+        Args:
+            **kwargs: 查询参数（limit, order_id, rule_id, platform_name等）
+            
+        Returns:
+            List[Dict[str, Any]]: 匹配记录列表
+        """
+        try:
+            return self.db_manager.get_match_records(**kwargs)
+        except Exception as e:
+            logging.error(f"查询匹配记录失败: {e}")
+            return []

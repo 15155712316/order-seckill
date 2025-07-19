@@ -1,0 +1,19 @@
+2025-07-17 10:19:49,944 [[32mINFO[0m] ticket_grabber.logger.info:300 - 哈哈适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 10:19:49,947 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 10:19:49,948 [[32mINFO[0m] ticket_grabber.logger.info:300 - 影划算适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 10:19:49,948 [[32mINFO[0m] ticket_grabber.logger.info:300 - 芒果适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 10:20:15,683 [[31mERROR[0m] ticket_grabber.logger.error:308 - 影划算平台连续5次错误，已自动禁用
+2025-07-17 14:25:28,544 [[32mINFO[0m] ticket_grabber.logger.info:300 - 哈哈适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 14:25:28,545 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 14:25:28,545 [[32mINFO[0m] ticket_grabber.logger.info:300 - 影划算适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 14:25:28,546 [[32mINFO[0m] ticket_grabber.logger.info:300 - 芒果适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 14:25:54,154 [[31mERROR[0m] ticket_grabber.logger.error:308 - 影划算平台连续5次错误，已自动禁用
+2025-07-17 15:34:00,423 [[32mINFO[0m] ticket_grabber.logger.info:300 - 影划算测试适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 15:34:00,575 [[32mINFO[0m] ticket_grabber.logger.info:300 - 哈哈适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 15:34:00,576 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 15:34:00,576 [[32mINFO[0m] ticket_grabber.logger.info:300 - 影划算适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 15:34:00,577 [[32mINFO[0m] ticket_grabber.logger.info:300 - 芒果适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 18:51:27,402 [[32mINFO[0m] ticket_grabber.logger.info:300 - 哈哈适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 18:51:27,403 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 18:51:27,404 [[32mINFO[0m] ticket_grabber.logger.info:300 - 影划算适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-17 18:51:27,405 [[32mINFO[0m] ticket_grabber.logger.info:300 - 芒果适配器V2.0初始化完成 - LRU缓存大小: 500

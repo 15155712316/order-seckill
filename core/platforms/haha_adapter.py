@@ -6,16 +6,15 @@
 
 import json
 import logging
-import collections
 import aiohttp
 import hashlib
 import base64
 from Crypto.Cipher import AES
 from Crypto.Util.Padding import unpad
-from .base_adapter import BaseAdapter
-from ..database import DatabaseManager
+from .base_adapter import BaseAdapter, OrderData
 from PyQt6.QtCore import QObject, pyqtSignal
 from config import PLATFORM_MAX_AUTH_FAILURES
+from typing import List, Any
 
 
 class CredentialSignalEmitter(QObject):
@@ -28,21 +27,13 @@ class HahaAdapter(BaseAdapter):
 
     def __init__(self, name: str, config: dict = None):
         """初始化哈哈平台适配器"""
-        super().__init__(name)
+        super().__init__(name, config)
 
         # 【V3.5升级】配置注入机制
-        self.config = config or {}
         self.api_url = self.config.get('api_url', '')
         self.api_token = self.config.get('token', '')
         self.api_headers = self.config.get('headers', {})
         self.api_data_payload = self.config.get('data_payload', {})
-
-        # 用于去重的双端队列，最多保存指定数量的已见过的订单ID
-        max_cache_size = self.config.get('max_orders_cache', 500)  # 默认500
-        self.seen_order_ids = collections.deque(maxlen=max_cache_size)
-
-        # 初始化数据库管理器
-        self.db_manager = DatabaseManager()
 
         # 【新增】凭证失效检测
         self.auth_failure_count = 0  # 连续认证失败次数
@@ -138,154 +129,128 @@ class HahaAdapter(BaseAdapter):
             logging.error(f"测试{self.name}平台凭证异常: {e}")
             return False, f"连接测试异常: {str(e)}"
 
-    async def fetch_and_process(self):
+    async def _fetch_raw_data(self) -> Any:
         """
-        获取并处理哈哈平台的订单数据
-
-        完成以下工作：
-        1. 请求哈哈平台API获取原始数据
-        2. 解密数据（如果需要）
-        3. 解析和清洗数据
-        4. 去重处理
-        5. 返回标准化的订单列表
-
+        获取原始数据的具体实现 - 请求哈哈平台API
+        
         Returns:
-            list: 标准化的订单列表
+            Any: API响应的原始数据
+        """
+        # 【修复】检查平台停止状态
+        if self.is_stopped:
+            logging.warning(f"{self.name}平台已停止请求（连续失败{self.auth_failure_count}次）")
+            raise Exception(f'连续认证失败{self.auth_failure_count}次，已自动停止')
+
+        # 【V3.5升级】使用实例配置进行API请求
+        if not self.api_url or not self.api_token:
+            logging.error(f"{self.name}平台配置不完整，跳过数据获取")
+            raise Exception("配置不完整，请检查API地址和Token")
+
+        # 【修复】使用网络配置进行SSL和超时设置
+        import ssl
+
+        # 从config字典获取网络配置
+        network_config = self.config.get('network_config', {})
+
+        # 创建SSL上下文
+        ssl_context = None
+        if not network_config.get("verify_ssl", True):
+            ssl_context = ssl.create_default_context()
+            ssl_context.check_hostname = False
+            ssl_context.verify_mode = ssl.CERT_NONE
+
+        # 创建超时配置
+        timeout = aiohttp.ClientTimeout(total=network_config.get("timeout", 30))
+
+        connector = aiohttp.TCPConnector(ssl=ssl_context)
+        async with aiohttp.ClientSession(
+            headers=self.api_headers,
+            timeout=timeout,
+            connector=connector
+        ) as session:
+            logging.info("正在请求哈哈平台API...")
+
+            async with session.post(self.api_url, data=self.api_data_payload) as response:
+                # 获取返回的响应文本
+                response_text = await response.text()
+                logging.info(f"API响应状态码: {response.status}")
+
+                # 检查HTTP状态码
+                if response.status != 200:
+                    logging.error(f"HTTP请求失败，状态码: {response.status}")
+
+                    # 【新增】检查是否为认证相关错误
+                    if response.status in [401, 403]:
+                        self._handle_auth_failure()
+
+                    raise Exception(f"HTTP请求失败，状态码: {response.status}")
+
+                # 解析JSON响应并提取数据
+                try:
+                    # 1. 解析JSON响应
+                    api_response = json.loads(response_text)
+
+                    # 检查响应状态（根据实际API响应结构调整）
+                    if isinstance(api_response, dict):
+                        status = api_response.get('status') or api_response.get('code')
+                        if status and status != 200:
+                            logging.error(f"API返回错误状态: {api_response}")
+
+                            # 【新增】检查是否为认证相关错误
+                            error_msg = api_response.get('message', '').lower()
+                            if any(keyword in error_msg for keyword in ['auth', 'token', 'login', 'unauthorized', 'forbidden']):
+                                self._handle_auth_failure()
+
+                            raise Exception(f"API返回错误状态: {status}")
+
+                    # 2. 提取数据内容
+                    # 根据实际API响应结构提取数据，可能是加密数据或直接的订单数据
+                    if isinstance(api_response, dict):
+                        # 如果是字典，尝试提取data字段
+                        raw_data = api_response.get('data', api_response)
+                    else:
+                        # 如果直接是列表或其他格式
+                        raw_data = api_response
+
+                    if not raw_data:
+                        logging.warning("API响应中没有找到有效数据")
+                        return []
+
+                    # 【新增】成功获取数据，重置认证失败计数器
+                    self._reset_auth_failure_count()
+
+                    return raw_data
+
+                except json.JSONDecodeError as e:
+                    logging.error(f"解析API响应JSON失败: {e}")
+                    logging.error(f"原始响应内容: {response_text}")
+                    raise Exception(f"解析API响应JSON失败: {e}")
+
+    async def _process_raw_data(self, raw_data: Any) -> List[OrderData]:
+        """
+        处理原始数据的具体实现 - 解密、过滤和标准化数据
+        
+        Args:
+            raw_data: API返回的原始数据
+            
+        Returns:
+            List[OrderData]: 标准化的订单数据列表
         """
         try:
-            # 【修复】检查平台停止状态
-            if self.is_stopped:
-                logging.warning(f"{self.name}平台已停止请求（连续失败{self.auth_failure_count}次）")
-                return {
-                    'name': self.name,
-                    'success': False,
-                    'orders': [],
-                    'stopped': True,
-                    'stop_reason': f'连续认证失败{self.auth_failure_count}次，已自动停止'
-                }
-
-            # 【V3.5升级】使用实例配置进行API请求
-            if not self.api_url or not self.api_token:
-                logging.error(f"{self.name}平台配置不完整，跳过数据获取")
-                return {
-                    'name': self.name,
-                    'success': False,
-                    'orders': []
-                }
-
-            # 【修复】使用网络配置进行SSL和超时设置
-            import ssl
-
-            # 从config字典获取网络配置
-            network_config = self.config.get('network_config', {})
-
-            # 创建SSL上下文
-            ssl_context = None
-            if not network_config.get("verify_ssl", True):
-                ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
-
-            # 创建超时配置
-            timeout = aiohttp.ClientTimeout(total=network_config.get("timeout", 30))
-
-            connector = aiohttp.TCPConnector(ssl=ssl_context)
-            async with aiohttp.ClientSession(
-                headers=self.api_headers,
-                timeout=timeout,
-                connector=connector
-            ) as session:
-                logging.info("正在请求哈哈平台API...")
-
-                async with session.post(self.api_url, data=self.api_data_payload) as response:
-                    # 获取返回的响应文本
-                    response_text = await response.text()
-                    logging.info(f"API响应状态码: {response.status}")
-
-                    # 检查HTTP状态码
-                    if response.status != 200:
-                        logging.error(f"HTTP请求失败，状态码: {response.status}")
-
-                        # 【新增】检查是否为认证相关错误
-                        if response.status in [401, 403]:
-                            self._handle_auth_failure()
-
-                        return {
-                            'name': self.name,
-                            'success': False,
-                            'orders': []
-                        }
-
-            # 解析JSON响应并提取数据
-            try:
-                # 1. 解析JSON响应
-                api_response = json.loads(response_text)
-
-                # 检查响应状态（根据实际API响应结构调整）
-                if isinstance(api_response, dict):
-                    status = api_response.get('status') or api_response.get('code')
-                    if status and status != 200:
-                        logging.error(f"API返回错误状态: {api_response}")
-
-                        # 【新增】检查是否为认证相关错误
-                        error_msg = api_response.get('message', '').lower()
-                        if any(keyword in error_msg for keyword in ['auth', 'token', 'login', 'unauthorized', 'forbidden']):
-                            self._handle_auth_failure()
-
-                        return {
-                            'name': self.name,
-                            'success': False,
-                            'orders': []
-                        }
-
-                # 2. 提取数据内容
-                # 根据实际API响应结构提取数据，可能是加密数据或直接的订单数据
-                if isinstance(api_response, dict):
-                    # 如果是字典，尝试提取data字段
-                    raw_data = api_response.get('data', api_response)
-                else:
-                    # 如果直接是列表或其他格式
-                    raw_data = api_response
-
-                if not raw_data:
-                    logging.warning("API响应中没有找到有效数据")
-                    return {
-                        'name': self.name,
-                        'success': False,
-                        'orders': []
-                    }
-
-                # 3. 判断是否需要解密
-                if isinstance(raw_data, str):
-                    # 如果是字符串，可能是加密数据
-                    decrypted_orders = await self._decrypt_data(raw_data)
-                    if not decrypted_orders:
-                        logging.warning("解密后没有获得有效的订单数据")
-                        return {
-                            'name': self.name,
-                            'success': True,  # 解密成功但没有数据，仍然算作成功
-                            'orders': []
-                        }
-                elif isinstance(raw_data, list):
-                    # 如果是列表，可能是直接的订单数据
-                    logging.info("检测到列表数据，直接处理...")
-                    decrypted_orders = raw_data
-                else:
-                    logging.warning(f"未知的数据格式: {type(raw_data)}")
-                    return {
-                        'name': self.name,
-                        'success': False,
-                        'orders': []
-                    }
-
-            except json.JSONDecodeError as e:
-                logging.error(f"解析API响应JSON失败: {e}")
-                logging.error(f"原始响应内容: {response_text}")
-                return {
-                    'name': self.name,
-                    'success': False,
-                    'orders': []
-                }
+            # 3. 判断是否需要解密
+            if isinstance(raw_data, str):
+                # 如果是字符串，可能是加密数据
+                decrypted_orders = await self._decrypt_data(raw_data)
+                if not decrypted_orders:
+                    logging.warning("解密后没有获得有效的订单数据")
+                    return []
+            elif isinstance(raw_data, list):
+                # 如果是列表，可能是直接的订单数据
+                logging.info("检测到列表数据，直接处理...")
+                decrypted_orders = raw_data
+            else:
+                logging.warning(f"未知的数据格式: {type(raw_data)}")
+                return []
 
             # 4. 精确预过滤：只保留 is_from != '5' 的订单
             filtered_orders = []
@@ -298,39 +263,25 @@ class HahaAdapter(BaseAdapter):
             # 5. 数据标准化
             standardized_orders = self._standardize_orders(filtered_orders)
 
-            # 6. 去重处理
-            new_orders = self._deduplicate_orders(standardized_orders)
-
-            # 7. 保存新订单到数据库
-            self.db_manager.save_orders(new_orders, self.name)
-
-            # 8. 调试信息：统计 is_lock=1 的订单
+            # 调试信息：统计 is_lock=1 的订单
             locked_orders_count = 0
-            for order in new_orders:
-                if order.get('raw_data', {}).get('is_lock') == '1':
+            for order in standardized_orders:
+                if order.raw_data.get('is_lock') == '1':
                     locked_orders_count += 1
 
             # 记录调试信息到控制台日志
             if locked_orders_count > 0:
                 logging.debug(f"🔒 发现 {locked_orders_count} 条 is_lock=1 订单")
 
-            # 9. 记录处理统计信息
-            logging.debug(f"📋 本次处理了 {len(decrypted_orders)} 条原始订单，过滤后 {len(filtered_orders)} 条，新增 {len(new_orders)} 条")
+            # 记录处理统计信息
+            logging.debug(f"📋 本次处理了 {len(decrypted_orders)} 条原始订单，过滤后 {len(filtered_orders)} 条，标准化后 {len(standardized_orders)} 条")
 
-            logging.info(f"成功处理 {len(new_orders)} 个新订单")
+            logging.info(f"成功处理 {len(standardized_orders)} 个订单")
 
-            # 【新增】成功处理数据，重置认证失败计数器
-            self._reset_auth_failure_count()
-
-            # 返回新的统一格式
-            return {
-                'name': self.name,
-                'success': True,
-                'orders': new_orders
-            }
+            return standardized_orders
 
         except Exception as e:
-            logging.error(f"🚨 {self.name}平台获取订单数据时发生错误: {e}")
+            logging.error(f"🚨 {self.name}平台处理数据时发生错误: {e}")
             logging.error(f"错误类型: {type(e).__name__}")
             import traceback
             logging.error(f"错误堆栈: {traceback.format_exc()}")
@@ -352,11 +303,7 @@ class HahaAdapter(BaseAdapter):
                 logging.warning(f"{self.name}平台遇到认证相关错误，触发失败计数")
                 self._handle_auth_failure()
 
-            return {
-                'name': self.name,
-                'success': False,
-                'orders': []
-            }
+            raise e
 
     def _aes_decrypt(self, ciphertext: str, token: str) -> str:
         """
@@ -438,9 +385,9 @@ class HahaAdapter(BaseAdapter):
             logging.error(f"错误类型: {type(e).__name__}")
             return []
     
-    def _standardize_orders(self, filtered_orders: list) -> list:
+    def _standardize_orders(self, filtered_orders: list) -> List[OrderData]:
         """
-        标准化订单数据格式 - v1.0最终版本
+        标准化订单数据格式 - v2.0版本，返回OrderData对象
 
         接收经过预过滤的订单列表，进行字段映射和数据类型转换
 
@@ -448,7 +395,7 @@ class HahaAdapter(BaseAdapter):
             filtered_orders (list): 经过预过滤的订单数据列表（is_from != '5'）
 
         Returns:
-            list: 标准化后的订单列表
+            List[OrderData]: 标准化后的订单对象列表
         """
         standardized = []
 
@@ -498,22 +445,21 @@ class HahaAdapter(BaseAdapter):
                 # 【新增】提取时间字段 - 哈哈平台使用'time'字段（格式：2025-07-08 14:10）
                 show_time = order.get('time', order.get('showTime', order.get('show_time', '')))
 
-                # 构建标准化订单对象
-                standardized_order = {
-                    'order_id': order_id,
-                    'bidding_price': bidding_price,
-                    'seat_count': seat_count,
-                    'original_price': original_price,
-                    'city': city,
-                    'cinema_name': cinema_name,
-                    'hall_type': hall_type,
-                    'movie_name': movie_name,
-                    'show_time': show_time,  # 【新增】放映时间
-                    # 保留原始数据以备后用
-                    'raw_data': order
-                }
+                # 创建OrderData对象
+                order_data = OrderData(
+                    order_id=order_id,
+                    bidding_price=bidding_price,
+                    seat_count=seat_count,
+                    original_price=original_price,
+                    city=city,
+                    cinema_name=cinema_name,
+                    hall_type=hall_type,
+                    movie_name=movie_name,
+                    show_time=show_time,
+                    raw_data=order
+                )
 
-                standardized.append(standardized_order)
+                standardized.append(order_data)
 
             except Exception as e:
                 logging.warning(f"标准化订单数据失败，跳过此订单: {e}")
@@ -522,33 +468,6 @@ class HahaAdapter(BaseAdapter):
 
         logging.info(f"数据标准化完成，成功处理 {len(standardized)} 条订单")
         return standardized
-    
-    def _deduplicate_orders(self, standardized_orders: list) -> list:
-        """
-        去重处理，过滤掉已经见过的订单
-
-        Args:
-            standardized_orders (list): 标准化后的订单列表
-
-        Returns:
-            list: 去重后的新订单列表
-        """
-        new_orders = []
-
-        for order in standardized_orders:
-            order_id = order.get('order_id', '')
-            
-            # 跳过没有ID的订单
-            if not order_id:
-                continue
-            
-            # 检查是否已经见过这个订单
-            if order_id not in self.seen_order_ids:
-                # 新订单，添加到结果列表和已见列表
-                new_orders.append(order)
-                self.seen_order_ids.append(order_id)
-        
-        return new_orders
 
     def _handle_auth_failure(self):
         """

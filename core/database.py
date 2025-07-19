@@ -283,6 +283,26 @@ class DatabaseManager:
 
                 cursor.execute(create_settings_table_sql)
 
+                # 【调试系统】创建匹配记录表
+                create_match_records_table_sql = """
+                CREATE TABLE IF NOT EXISTS match_records (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    record_id TEXT UNIQUE NOT NULL,
+                    order_id TEXT NOT NULL,
+                    rule_id TEXT NOT NULL,
+                    rule_name TEXT NOT NULL,
+                    rule_type TEXT NOT NULL,
+                    match_result TEXT NOT NULL,
+                    platform_name TEXT NOT NULL,
+                    order_data TEXT NOT NULL,
+                    match_details TEXT NOT NULL,
+                    profit_calculation TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                )
+                """
+
+                cursor.execute(create_match_records_table_sql)
+
                 # 创建索引以提高查询性能
                 index_sqls = [
                     # orders表索引
@@ -296,7 +316,13 @@ class DatabaseManager:
                     # 【新增】policies表索引
                     "CREATE INDEX IF NOT EXISTS idx_policy_order ON policies(policy_order)",
                     "CREATE INDEX IF NOT EXISTS idx_policy_type ON policies(type)",
-                    "CREATE INDEX IF NOT EXISTS idx_policy_enabled ON policies(is_enabled)"
+                    "CREATE INDEX IF NOT EXISTS idx_policy_enabled ON policies(is_enabled)",
+                    # 【调试系统】match_records表索引
+                    "CREATE INDEX IF NOT EXISTS idx_match_order_id ON match_records(order_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_match_rule_id ON match_records(rule_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_match_created_at ON match_records(created_at)",
+                    "CREATE INDEX IF NOT EXISTS idx_match_platform ON match_records(platform_name)",
+                    "CREATE INDEX IF NOT EXISTS idx_match_rule_type ON match_records(rule_type)"
                 ]
 
                 for index_sql in index_sqls:
@@ -509,26 +535,27 @@ class DatabaseManager:
             return 0
 
         try:
-            cursor = self.connection.cursor()
-            current_time = get_china_time()
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                current_time = get_china_time()
 
-            # 准备批量插入语句
-            insert_sql = """
-            INSERT OR IGNORE INTO whitelist_cinemas (policy_id, cinema_name, created_at)
-            VALUES (?, ?, ?)
-            """
+                # 准备批量插入语句
+                insert_sql = """
+                INSERT OR IGNORE INTO whitelist_cinemas (policy_id, cinema_name, created_at)
+                VALUES (?, ?, ?)
+                """
 
-            # 批量插入数据
-            insert_data = [(policy_id, cinema_name.strip(), current_time)
-                          for cinema_name in cinema_names if cinema_name.strip()]
+                # 批量插入数据
+                insert_data = [(policy_id, cinema_name.strip(), current_time)
+                              for cinema_name in cinema_names if cinema_name.strip()]
 
-            cursor.executemany(insert_sql, insert_data)
-            self.connection.commit()
+                cursor.executemany(insert_sql, insert_data)
+                conn.commit()
 
-            inserted_count = cursor.rowcount
-            logging.info(f"成功添加 {inserted_count} 个影院到白名单策略 {policy_id}")
+                inserted_count = cursor.rowcount
+                logging.info(f"成功添加 {inserted_count} 个影院到白名单策略 {policy_id}")
 
-            return inserted_count
+                return inserted_count
 
         except Exception as e:
             logging.error(f"添加影院到白名单失败: {e}")
@@ -545,21 +572,22 @@ class DatabaseManager:
             set: 影院名称集合
         """
         try:
-            cursor = self.connection.cursor()
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
 
-            query_sql = """
-            SELECT cinema_name FROM whitelist_cinemas
-            WHERE policy_id = ?
-            ORDER BY cinema_name
-            """
+                query_sql = """
+                SELECT cinema_name FROM whitelist_cinemas
+                WHERE policy_id = ?
+                ORDER BY cinema_name
+                """
 
-            cursor.execute(query_sql, (policy_id,))
-            rows = cursor.fetchall()
+                cursor.execute(query_sql, (policy_id,))
+                rows = cursor.fetchall()
 
-            cinema_names = {row[0] for row in rows}
-            logging.info(f"从数据库加载策略 {policy_id} 的 {len(cinema_names)} 个影院")
+                cinema_names = {row[0] for row in rows}
+                logging.info(f"从数据库加载策略 {policy_id} 的 {len(cinema_names)} 个影院")
 
-            return cinema_names
+                return cinema_names
 
         except Exception as e:
             logging.error(f"加载白名单影院失败: {e}")
@@ -576,16 +604,17 @@ class DatabaseManager:
             int: 删除的记录数量
         """
         try:
-            cursor = self.connection.cursor()
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
 
-            delete_sql = "DELETE FROM whitelist_cinemas WHERE policy_id = ?"
-            cursor.execute(delete_sql, (policy_id,))
-            self.connection.commit()
+                delete_sql = "DELETE FROM whitelist_cinemas WHERE policy_id = ?"
+                cursor.execute(delete_sql, (policy_id,))
+                conn.commit()
 
-            deleted_count = cursor.rowcount
-            logging.info(f"清空策略 {policy_id} 的 {deleted_count} 个影院记录")
+                deleted_count = cursor.rowcount
+                logging.info(f"清空策略 {policy_id} 的 {deleted_count} 个影院记录")
 
-            return deleted_count
+                return deleted_count
 
         except Exception as e:
             logging.error(f"清空白名单影院失败: {e}")
@@ -599,22 +628,23 @@ class DatabaseManager:
             dict: 包含各策略的影院数量统计
         """
         try:
-            cursor = self.connection.cursor()
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
 
-            query_sql = """
-            SELECT policy_id, COUNT(*) as cinema_count
-            FROM whitelist_cinemas
-            GROUP BY policy_id
-            ORDER BY policy_id
-            """
+                query_sql = """
+                SELECT policy_id, COUNT(*) as cinema_count
+                FROM whitelist_cinemas
+                GROUP BY policy_id
+                ORDER BY policy_id
+                """
 
-            cursor.execute(query_sql)
-            rows = cursor.fetchall()
+                cursor.execute(query_sql)
+                rows = cursor.fetchall()
 
-            stats = {row[0]: row[1] for row in rows}
-            logging.info(f"白名单统计: {len(stats)} 个策略，总计 {sum(stats.values())} 个影院")
+                stats = {row[0]: row[1] for row in rows}
+                logging.info(f"白名单统计: {len(stats)} 个策略，总计 {sum(stats.values())} 个影院")
 
-            return stats
+                return stats
 
         except Exception as e:
             logging.error(f"获取白名单统计失败: {e}")
@@ -632,40 +662,41 @@ class DatabaseManager:
             List[Dict[str, Any]]: 策略字典列表，config字段已从JSON字符串解析为字典
         """
         try:
-            cursor = self.connection.cursor()
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
 
-            query_sql = """
-            SELECT id, name, type, policy_order, config, is_enabled, created_at
-            FROM policies
-            ORDER BY policy_order ASC
-            """
+                query_sql = """
+                SELECT id, name, type, policy_order, config, is_enabled, created_at
+                FROM policies
+                ORDER BY policy_order ASC
+                """
 
-            cursor.execute(query_sql)
-            rows = cursor.fetchall()
+                cursor.execute(query_sql)
+                rows = cursor.fetchall()
 
-            policies = []
-            for row in rows:
-                policy = {
-                    'rule_id': row[0],  # 保持与现有代码兼容
-                    'rule_name': row[1],  # 保持与现有代码兼容
-                    'type': row[2],
-                    'policy_order': row[3],
-                    'enabled': bool(row[5]),  # 保持与现有代码兼容
-                    'created_at': row[6]
-                }
+                policies = []
+                for row in rows:
+                    policy = {
+                        'rule_id': row[0],  # 保持与现有代码兼容
+                        'rule_name': row[1],  # 保持与现有代码兼容
+                        'type': row[2],
+                        'policy_order': row[3],
+                        'enabled': bool(row[5]),  # 保持与现有代码兼容
+                        'created_at': row[6]
+                    }
 
-                # 解析config JSON字符串为字典
-                try:
-                    config = json.loads(row[4])
-                    policy.update(config)  # 将config内容合并到策略字典中
-                except json.JSONDecodeError as e:
-                    logging.error(f"策略 {row[0]} 的config JSON解析失败: {e}")
-                    continue
+                    # 解析config JSON字符串为字典
+                    try:
+                        config = json.loads(row[4])
+                        policy.update(config)  # 将config内容合并到策略字典中
+                    except json.JSONDecodeError as e:
+                        logging.error(f"策略 {row[0]} 的config JSON解析失败: {e}")
+                        continue
 
-                policies.append(policy)
+                    policies.append(policy)
 
-            logging.info(f"从数据库加载了 {len(policies)} 条策略")
-            return policies
+                logging.info(f"从数据库加载了 {len(policies)} 条策略")
+                return policies
 
         except Exception as e:
             logging.error(f"加载策略失败: {e}")
@@ -682,42 +713,43 @@ class DatabaseManager:
             bool: 是否保存成功
         """
         try:
-            cursor = self.connection.cursor()
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
 
-            # 提取基本字段
-            policy_id = policy.get('rule_id')
-            policy_name = policy.get('rule_name', '未命名策略')
-            policy_type = policy.get('match_conditions', {}).get('match_mode', 'keywords')
-            policy_order = policy.get('policy_order', 999)  # 默认排序值
-            is_enabled = 1 if policy.get('enabled', True) else 0
+                # 提取基本字段
+                policy_id = policy.get('rule_id')
+                policy_name = policy.get('rule_name', '未命名策略')
+                policy_type = policy.get('match_conditions', {}).get('match_mode', 'keywords')
+                policy_order = policy.get('policy_order', 999)  # 默认排序值
+                is_enabled = 1 if policy.get('enabled', True) else 0
 
-            # 构建config字典（排除基本字段）
-            config = policy.copy()
-            excluded_fields = ['rule_id', 'rule_name', 'type', 'policy_order', 'enabled', 'created_at']
-            for field in excluded_fields:
-                config.pop(field, None)
+                # 构建config字典（排除基本字段）
+                config = policy.copy()
+                excluded_fields = ['rule_id', 'rule_name', 'type', 'policy_order', 'enabled', 'created_at']
+                for field in excluded_fields:
+                    config.pop(field, None)
 
-            # 将config转换为JSON字符串
-            config_json = json.dumps(config, ensure_ascii=False, indent=2)
+                # 将config转换为JSON字符串
+                config_json = json.dumps(config, ensure_ascii=False, indent=2)
 
-            # 使用INSERT OR REPLACE INTO逻辑
-            insert_sql = """
-            INSERT OR REPLACE INTO policies
-            (id, name, type, policy_order, config, is_enabled, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-            """
+                # 使用INSERT OR REPLACE INTO逻辑
+                insert_sql = """
+                INSERT OR REPLACE INTO policies
+                (id, name, type, policy_order, config, is_enabled, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """
 
-            # 如果是新策略，使用当前时间；如果是更新，保持原创建时间
-            created_at = policy.get('created_at', get_china_time())
+                # 如果是新策略，使用当前时间；如果是更新，保持原创建时间
+                created_at = policy.get('created_at', get_china_time())
 
-            cursor.execute(insert_sql, (
-                policy_id, policy_name, policy_type, policy_order,
-                config_json, is_enabled, created_at
-            ))
+                cursor.execute(insert_sql, (
+                    policy_id, policy_name, policy_type, policy_order,
+                    config_json, is_enabled, created_at
+                ))
 
-            self.connection.commit()
-            logging.info(f"策略 '{policy_name}' (ID: {policy_id}) 保存成功")
-            return True
+                conn.commit()
+                logging.info(f"策略 '{policy_name}' (ID: {policy_id}) 保存成功")
+                return True
 
         except Exception as e:
             logging.error(f"保存策略失败: {e}")
@@ -734,21 +766,22 @@ class DatabaseManager:
             bool: 是否删除成功
         """
         try:
-            cursor = self.connection.cursor()
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
 
-            # 删除策略
-            delete_sql = "DELETE FROM policies WHERE id = ?"
-            cursor.execute(delete_sql, (policy_id,))
+                # 删除策略
+                delete_sql = "DELETE FROM policies WHERE id = ?"
+                cursor.execute(delete_sql, (policy_id,))
 
-            deleted_count = cursor.rowcount
-            self.connection.commit()
+                deleted_count = cursor.rowcount
+                conn.commit()
 
-            if deleted_count > 0:
-                logging.info(f"策略 {policy_id} 删除成功")
-                return True
-            else:
-                logging.warning(f"策略 {policy_id} 不存在，无法删除")
-                return False
+                if deleted_count > 0:
+                    logging.info(f"策略 {policy_id} 删除成功")
+                    return True
+                else:
+                    logging.warning(f"策略 {policy_id} 不存在，无法删除")
+                    return False
 
         except Exception as e:
             logging.error(f"删除策略 {policy_id} 失败: {e}")
@@ -765,18 +798,19 @@ class DatabaseManager:
             bool: 是否更新成功
         """
         try:
-            cursor = self.connection.cursor()
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
 
-            update_sql = "UPDATE policies SET policy_order = ? WHERE id = ?"
+                update_sql = "UPDATE policies SET policy_order = ? WHERE id = ?"
 
-            for i, policy in enumerate(policies):
-                policy_id = policy.get('rule_id')
-                new_order = i + 1  # 从1开始排序
-                cursor.execute(update_sql, (new_order, policy_id))
+                for i, policy in enumerate(policies):
+                    policy_id = policy.get('rule_id')
+                    new_order = i + 1  # 从1开始排序
+                    cursor.execute(update_sql, (new_order, policy_id))
 
-            self.connection.commit()
-            logging.info(f"批量更新了 {len(policies)} 个策略的排序")
-            return True
+                conn.commit()
+                logging.info(f"批量更新了 {len(policies)} 个策略的排序")
+                return True
 
         except Exception as e:
             logging.error(f"批量更新策略排序失败: {e}")
@@ -785,13 +819,14 @@ class DatabaseManager:
     def save_setting(self, key: str, value: str):
         """【守护者之盾】保存或更新用户设置"""
         try:
-            cursor = self.connection.cursor()
-            cursor.execute(
-                "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
-                (key, value)
-            )
-            self.connection.commit()
-            logging.debug(f"保存设置: {key} = {value}")
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)",
+                    (key, value)
+                )
+                conn.commit()
+                logging.debug(f"保存设置: {key} = {value}")
         except Exception as e:
             logging.error(f"保存设置失败: {e}")
             raise
@@ -799,18 +834,249 @@ class DatabaseManager:
     def load_setting(self, key: str, default_value: str = None) -> str:
         """【守护者之盾】加载用户设置"""
         try:
-            cursor = self.connection.cursor()
-            cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
-            result = cursor.fetchone()
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+                result = cursor.fetchone()
 
-            if result:
-                return result[0]
-            else:
-                return default_value
+                if result:
+                    return result[0]
+                else:
+                    return default_value
 
         except Exception as e:
             logging.error(f"加载设置失败: {e}")
             return default_value
+
+    # ========================================
+    # 【调试系统】匹配记录管理方法
+    # ========================================
+
+    def save_match_record(self, match_data: Dict[str, Any]) -> bool:
+        """
+        保存匹配记录到数据库
+        
+        Args:
+            match_data (Dict[str, Any]): 匹配记录数据
+                {
+                    'record_id': str,           # 唯一记录ID
+                    'order_id': str,            # 订单ID
+                    'rule_id': str,             # 规则ID
+                    'rule_name': str,           # 规则名称
+                    'rule_type': str,           # 规则类型（keywords/whitelist）
+                    'match_result': str,        # 匹配结果状态
+                    'platform_name': str,       # 平台名称
+                    'order_data': dict,         # 完整订单数据
+                    'match_details': dict,      # 匹配过程详情
+                    'profit_calculation': dict  # 利润计算详情
+                }
+        
+        Returns:
+            bool: 是否保存成功
+        """
+        try:
+            insert_sql = """
+            INSERT OR REPLACE INTO match_records (
+                record_id, order_id, rule_id, rule_name, rule_type, 
+                match_result, platform_name, order_data, match_details, 
+                profit_calculation, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """
+            
+            current_time = get_china_time()
+            
+            # 将字典数据转换为JSON字符串
+            order_data_json = json.dumps(match_data.get('order_data', {}), ensure_ascii=False)
+            match_details_json = json.dumps(match_data.get('match_details', {}), ensure_ascii=False)
+            profit_calculation_json = json.dumps(match_data.get('profit_calculation', {}), ensure_ascii=False)
+            
+            params = (
+                match_data.get('record_id'),
+                match_data.get('order_id'),
+                match_data.get('rule_id'),
+                match_data.get('rule_name'),
+                match_data.get('rule_type'),
+                match_data.get('match_result', 'SUCCESS'),
+                match_data.get('platform_name'),
+                order_data_json,
+                match_details_json,
+                profit_calculation_json,
+                current_time
+            )
+            
+            self.execute_query(insert_sql, params)
+            logging.debug(f"保存匹配记录成功: {match_data.get('record_id')}")
+            return True
+            
+        except Exception as e:
+            logging.error(f"保存匹配记录失败: {e}")
+            return False
+
+    def get_match_records(self, limit: int = 100, order_id: str = None, 
+                         rule_id: str = None, platform_name: str = None) -> List[Dict[str, Any]]:
+        """
+        查询匹配记录
+        
+        Args:
+            limit (int): 返回记录数量限制
+            order_id (str): 按订单ID过滤
+            rule_id (str): 按规则ID过滤
+            platform_name (str): 按平台名称过滤
+            
+        Returns:
+            List[Dict[str, Any]]: 匹配记录列表
+        """
+        try:
+            # 构建基础查询
+            base_sql = """
+            SELECT record_id, order_id, rule_id, rule_name, rule_type, 
+                   match_result, platform_name, order_data, match_details, 
+                   profit_calculation, created_at
+            FROM match_records
+            """
+            
+            # 构建WHERE条件
+            where_conditions = []
+            params = []
+            
+            if order_id:
+                where_conditions.append("order_id = ?")
+                params.append(order_id)
+            
+            if rule_id:
+                where_conditions.append("rule_id = ?")
+                params.append(rule_id)
+            
+            if platform_name:
+                where_conditions.append("platform_name = ?")
+                params.append(platform_name)
+            
+            # 组装最终查询
+            if where_conditions:
+                query_sql = base_sql + " WHERE " + " AND ".join(where_conditions)
+            else:
+                query_sql = base_sql
+            
+            query_sql += " ORDER BY created_at DESC LIMIT ?"
+            params.append(limit)
+            
+            rows = self.execute_query(query_sql, tuple(params), fetch='all')
+            
+            # 转换为字典列表并解析JSON字段
+            records = []
+            for row in rows:
+                record = {
+                    'record_id': row[0],
+                    'order_id': row[1],
+                    'rule_id': row[2],
+                    'rule_name': row[3],
+                    'rule_type': row[4],
+                    'match_result': row[5],
+                    'platform_name': row[6],
+                    'created_at': row[10]
+                }
+                
+                # 解析JSON字段
+                try:
+                    record['order_data'] = json.loads(row[7])
+                    record['match_details'] = json.loads(row[8])
+                    record['profit_calculation'] = json.loads(row[9])
+                except json.JSONDecodeError as e:
+                    logging.warning(f"解析匹配记录JSON失败: {e}")
+                    record['order_data'] = {}
+                    record['match_details'] = {}
+                    record['profit_calculation'] = {}
+                
+                records.append(record)
+            
+            return records
+            
+        except Exception as e:
+            logging.error(f"查询匹配记录失败: {e}")
+            return []
+
+    def get_match_statistics(self) -> Dict[str, Any]:
+        """
+        获取匹配统计信息
+        
+        Returns:
+            Dict[str, Any]: 统计信息
+        """
+        try:
+            stats = {}
+            
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 总匹配记录数
+                cursor.execute("SELECT COUNT(*) FROM match_records")
+                stats['total_matches'] = cursor.fetchone()[0]
+                
+                # 按规则类型统计
+                cursor.execute("""
+                    SELECT rule_type, COUNT(*) 
+                    FROM match_records 
+                    GROUP BY rule_type
+                """)
+                stats['by_rule_type'] = dict(cursor.fetchall())
+                
+                # 按平台统计
+                cursor.execute("""
+                    SELECT platform_name, COUNT(*) 
+                    FROM match_records 
+                    GROUP BY platform_name
+                """)
+                stats['by_platform'] = dict(cursor.fetchall())
+                
+                # 按规则统计
+                cursor.execute("""
+                    SELECT rule_name, COUNT(*) 
+                    FROM match_records 
+                    GROUP BY rule_name
+                    ORDER BY COUNT(*) DESC
+                    LIMIT 10
+                """)
+                stats['top_rules'] = dict(cursor.fetchall())
+                
+                # 最近24小时匹配数
+                cursor.execute("""
+                    SELECT COUNT(*) 
+                    FROM match_records 
+                    WHERE datetime(created_at) >= datetime('now', '-1 day')
+                """)
+                stats['recent_24h'] = cursor.fetchone()[0]
+            
+            return stats
+            
+        except Exception as e:
+            logging.error(f"获取匹配统计失败: {e}")
+            return {}
+
+    def clear_old_match_records(self, days: int = 30) -> int:
+        """
+        清理指定天数之前的匹配记录
+        
+        Args:
+            days (int): 保留天数
+            
+        Returns:
+            int: 清理的记录数量
+        """
+        try:
+            delete_sql = """
+            DELETE FROM match_records 
+            WHERE datetime(created_at) < datetime('now', '-{} days')
+            """.format(days)
+            
+            deleted_count = self.execute_query(delete_sql, fetch='count')
+            if deleted_count > 0:
+                logging.info(f"清理了 {deleted_count} 条超过 {days} 天的匹配记录")
+            
+            return deleted_count
+            
+        except Exception as e:
+            logging.error(f"清理匹配记录失败: {e}")
+            return 0
 
     def close(self):
         """关闭数据库连接池"""

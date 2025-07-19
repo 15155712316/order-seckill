@@ -12,8 +12,10 @@ import aiohttp
 import asyncio
 import platform
 import uuid
+import time
 from typing import Tuple, Dict, Optional
 import config
+from .heartbeat_logger import get_heartbeat_logger
 
 class AuthManager:
     """【守护者之盾】认证管理器"""
@@ -25,6 +27,9 @@ class AuthManager:
         self.machine_code = None
         self.session_token = None
         self.user_data = None
+
+        # 【心跳日志】初始化心跳日志记录器
+        self.heartbeat_logger = get_heartbeat_logger()
 
         logging.info(f"守护者之盾认证管理器初始化完成，服务器: {self.server_url}")
     
@@ -246,17 +251,25 @@ class AuthManager:
         # 如果所有重试都失败了
         return False, "登录失败，已达到最大重试次数", None
     
-    async def validate_session(self) -> Tuple[bool, str]:
+    async def validate_session(self, heartbeat_type: str = "scheduled") -> Tuple[bool, str]:
         """
         验证会话有效性（心跳检测）
+
+        Args:
+            heartbeat_type: 心跳类型 ('scheduled', 'retry')
 
         Returns:
             Tuple[bool, str]: (验证结果, 消息)
         """
         if not self.session_token:
-            return False, "未登录"
+            error_msg = "未登录"
+            self.heartbeat_logger.log_heartbeat_response(
+                status_code=0, success=False, error_message=error_msg
+            )
+            return False, error_msg
 
         machine_code = self.get_machine_code()
+        phone = self.user_data.get('phone') if self.user_data else None
 
         # 准备验证数据
         validate_data = {
@@ -267,14 +280,34 @@ class AuthManager:
         # 构建完整的验证URL
         validate_url = f"{self.server_url}/validate"
 
+        # 【心跳日志】记录心跳请求
+        self.heartbeat_logger.log_heartbeat_request(
+            heartbeat_type=heartbeat_type,
+            machine_code=machine_code,
+            phone=phone,
+            token=self.session_token,
+            request_data=validate_data
+        )
+
         # 网络配置
         timeout = self.network_config.get('timeout', 15)  # 心跳检测使用较短超时
         verify_ssl = self.network_config.get('verify_ssl', False)
         retry_count = min(self.network_config.get('retry_count', 3), 2)  # 心跳检测最多重试2次
 
         for attempt in range(retry_count):
+            start_time = time.time()  # 记录请求开始时间
+
             try:
                 logging.debug(f"执行心跳验证 (第{attempt + 1}次)")
+
+                # 【心跳日志】记录重试信息（如果不是第一次）
+                if attempt > 0:
+                    self.heartbeat_logger.log_heartbeat_retry(
+                        retry_count=attempt + 1,
+                        max_retries=retry_count,
+                        retry_interval=1,
+                        reason="前次请求失败"
+                    )
 
                 # 创建SSL连接器
                 connector = aiohttp.TCPConnector(ssl=verify_ssl)
@@ -294,6 +327,8 @@ class AuthManager:
                         }
                     ) as response:
 
+                        duration = time.time() - start_time  # 计算请求耗时
+
                         if response.status == 200:
                             result = await response.json()
 
@@ -301,16 +336,43 @@ class AuthManager:
                                 # 验证成功，更新用户数据
                                 self.user_data = result.get("user_data", self.user_data)
                                 logging.debug("会话验证成功")
+
+                                # 【心跳日志】记录成功响应
+                                self.heartbeat_logger.log_heartbeat_response(
+                                    status_code=response.status,
+                                    response_data=result,
+                                    duration=duration,
+                                    success=True
+                                )
+
                                 return True, "会话有效"
                             else:
                                 # 验证失败
                                 error_message = result.get("message", "会话无效")
                                 logging.warning(f"会话验证失败: {error_message}")
+
+                                # 【心跳日志】记录失败响应
+                                self.heartbeat_logger.log_heartbeat_response(
+                                    status_code=response.status,
+                                    response_data=result,
+                                    duration=duration,
+                                    success=False,
+                                    error_message=error_message
+                                )
+
                                 return False, error_message
                         else:
                             # HTTP错误
                             error_msg = f"服务器错误: HTTP {response.status}"
                             logging.error(f"会话验证请求失败: {error_msg}")
+
+                            # 【心跳日志】记录HTTP错误响应
+                            self.heartbeat_logger.log_heartbeat_response(
+                                status_code=response.status,
+                                duration=duration,
+                                success=False,
+                                error_message=error_msg
+                            )
 
                             # 如果是最后一次重试，返回错误
                             if attempt == retry_count - 1:
@@ -322,31 +384,73 @@ class AuthManager:
                                 continue
 
             except aiohttp.ClientError as e:
+                duration = time.time() - start_time
+                error_msg = "网络连接失败"
                 logging.error(f"心跳验证网络错误 (第{attempt + 1}次): {e}")
+
+                # 【心跳日志】记录网络错误
+                self.heartbeat_logger.log_heartbeat_network_error(
+                    error_type="connection",
+                    error_message=str(e),
+                    attempt=attempt + 1,
+                    duration=duration
+                )
+
                 if attempt == retry_count - 1:
-                    return False, "网络连接失败"
+                    return False, error_msg
                 else:
                     await asyncio.sleep(1)
                     continue
 
             except asyncio.TimeoutError:
+                duration = time.time() - start_time
+                error_msg = "验证请求超时"
                 logging.error(f"心跳验证超时 (第{attempt + 1}次)")
+
+                # 【心跳日志】记录超时错误
+                self.heartbeat_logger.log_heartbeat_network_error(
+                    error_type="timeout",
+                    error_message=f"请求超时 ({timeout}s)",
+                    attempt=attempt + 1,
+                    duration=duration
+                )
+
                 if attempt == retry_count - 1:
-                    return False, "验证请求超时"
+                    return False, error_msg
                 else:
                     await asyncio.sleep(1)
                     continue
 
             except Exception as e:
+                duration = time.time() - start_time
+                error_msg = f"验证异常: {str(e)}"
                 logging.error(f"心跳验证异常 (第{attempt + 1}次): {e}")
+
+                # 【心跳日志】记录其他异常
+                self.heartbeat_logger.log_heartbeat_network_error(
+                    error_type="other",
+                    error_message=str(e),
+                    attempt=attempt + 1,
+                    duration=duration
+                )
+
                 if attempt == retry_count - 1:
-                    return False, f"验证异常: {str(e)}"
+                    return False, error_msg
                 else:
                     await asyncio.sleep(1)
                     continue
 
         # 如果所有重试都失败了
-        return False, "心跳验证失败，已达到最大重试次数"
+        final_error_msg = "心跳验证失败，已达到最大重试次数"
+
+        # 【心跳日志】记录最终失败
+        self.heartbeat_logger.log_heartbeat_response(
+            status_code=0,
+            success=False,
+            error_message=final_error_msg
+        )
+
+        return False, final_error_msg
     
     def get_user_info(self) -> Optional[Dict]:
         """

@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, List, Any, Tuple, Optional
 from dataclasses import dataclass
 from enum import Enum
+from collections import OrderedDict
 from core.logger import get_logger
 
 
@@ -87,18 +88,17 @@ class BaseAdapter(ABC):
         self.status = AdapterStatus.IDLE
         self.metrics = AdapterMetrics()
         
-        # 缓存优化 - 使用set代替deque for O(1) lookup
+        # LRU缓存优化 - 使用OrderedDict实现真正的最近最少使用缓存
         max_cache_size = self.config.get('max_orders_cache', 500)
-        self.seen_order_ids = set()
+        self.seen_order_ids = OrderedDict()  # LRU缓存：{order_id: True}
         self.max_cache_size = max_cache_size
-        self.cache_cleanup_counter = 0
         
         # 错误处理
         self.consecutive_errors = 0
         self.max_consecutive_errors = self.config.get('max_consecutive_errors', 5)
         self.is_disabled = False
         
-        self.logger.info(f"{self.name}适配器V2.0初始化完成")
+        self.logger.info(f"{self.name}适配器V2.0初始化完成 - LRU缓存大小: {self.max_cache_size}")
     
     async def fetch_and_process(self) -> Dict[str, Any]:
         """
@@ -135,18 +135,24 @@ class BaseAdapter(ABC):
             # 4. 去重处理
             new_orders = self._deduplicate_orders(processed_orders)
             
+            # 记录去重统计信息
+            if len(processed_orders) > 0:
+                logging.info(f"从 {len(processed_orders)} 条订单中筛选出 {len(new_orders)} 条新订单")
+            
             # 5. 更新指标
             duration = time.time() - start_time
-            self._update_success_metrics(len(new_orders), duration)
+            self._update_success_metrics(len(processed_orders), duration)
             
             self.logger.end_operation(operation_id, {
                 'platform': self.name,
-                'order_count': len(new_orders),
+                'total_orders': len(processed_orders),
+                'new_orders': len(new_orders),
                 'success': True,
                 'duration': duration
             })
             
             self.status = AdapterStatus.IDLE
+            # 【修复】只要API成功获取数据就认为成功，不管是否有新订单
             return self._create_result(True, new_orders)
             
         except Exception as e:
@@ -206,7 +212,7 @@ class BaseAdapter(ABC):
     
     def _deduplicate_orders(self, orders: List[OrderData]) -> List[OrderData]:
         """
-        去重处理 - 使用优化的set查找
+        去重处理 - 使用LRU缓存机制
         
         Args:
             orders: 订单列表
@@ -217,26 +223,32 @@ class BaseAdapter(ABC):
         new_orders = []
         
         for order in orders:
-            if order.order_id not in self.seen_order_ids:
-                # 添加到缓存
-                self.seen_order_ids.add(order.order_id)
-                new_orders.append(order)
+            if order.order_id in self.seen_order_ids:
+                # 已存在的订单，移动到末尾（标记为最近使用）
+                self.seen_order_ids.move_to_end(order.order_id)
+            else:
+                # 新订单，先检查是否需要清理空间
+                if len(self.seen_order_ids) >= self.max_cache_size:
+                    # 移除最旧的条目（最久未使用）
+                    removed_item = self.seen_order_ids.popitem(last=False)
+                    self.logger.debug(f"{self.name}平台LRU淘汰旧订单: {removed_item[0]}")
                 
-                # 缓存大小控制
-                if len(self.seen_order_ids) > self.max_cache_size:
-                    self._cleanup_cache()
+                # 添加新订单到缓存末尾
+                self.seen_order_ids[order.order_id] = True
+                new_orders.append(order)
         
         return new_orders
     
     def _cleanup_cache(self):
-        """清理缓存 - 移除最老的一半记录"""
+        """清理缓存 - LRU策略下主要用于手动清理"""
         if len(self.seen_order_ids) > self.max_cache_size:
-            # 简单策略：清理一半缓存
-            ids_to_remove = list(self.seen_order_ids)[:len(self.seen_order_ids) // 2]
-            for order_id in ids_to_remove:
-                self.seen_order_ids.discard(order_id)
+            # LRU策略：移除最久未使用的条目直到达到目标大小
+            target_size = self.max_cache_size // 2
+            while len(self.seen_order_ids) > target_size:
+                # 移除最旧的条目（最久未使用）
+                self.seen_order_ids.popitem(last=False)
             
-            self.logger.debug(f"{self.name}平台缓存清理完成，剩余{len(self.seen_order_ids)}条记录")
+            self.logger.debug(f"{self.name}平台LRU缓存清理完成，剩余{len(self.seen_order_ids)}条记录")
     
     def _create_result(self, success: bool, orders: List[OrderData], error: str = None) -> Dict[str, Any]:
         """创建标准化返回结果"""

@@ -65,6 +65,8 @@ class Worker(QObject):
 
             self.haha_adapter = None
             self.mahua_adapter = None
+            self.yinghuasuan_adapter = None
+            self.mango_adapter = None
 
             if credentials_json:
                 credentials = json.loads(credentials_json)
@@ -119,12 +121,48 @@ class Worker(QObject):
                     self.mahua_adapter = MahuaAdapter(MAHUA_PLATFORM_NAME, mahua_full_config)
                     logging.info("✅ 麻花平台适配器已使用数据库配置初始化")
 
+                # 【新增】初始化影划算平台适配器
+                yinghuasuan_config = credentials.get('yinghuasuan', {})
+                if yinghuasuan_config.get('bearer_token'):
+                    # 构建完整的影划算平台配置
+                    from config import YINGHUASUAN_API_URL, YINGHUASUAN_PLATFORM_NAME, NETWORK_CONFIG, MAX_ORDERS_CACHE
+                    yinghuasuan_full_config = {
+                        'bearer_token': yinghuasuan_config['bearer_token'],
+                        'api_url': YINGHUASUAN_API_URL,
+                        'network_config': NETWORK_CONFIG,
+                        'max_orders_cache': MAX_ORDERS_CACHE
+                    }
+
+                    from core.platforms.yinghuasuan_adapter import YingHuaSuanAdapter
+                    self.yinghuasuan_adapter = YingHuaSuanAdapter(YINGHUASUAN_PLATFORM_NAME, yinghuasuan_full_config)
+                    logging.info("✅ 影划算平台适配器已使用数据库配置初始化")
+
+                # 【新增】初始化芒果平台适配器
+                mango_config = credentials.get('mango', {})
+                if mango_config.get('user_token'):
+                    # 构建完整的芒果平台配置
+                    from config import MANGO_API_URL, MANGO_PLATFORM_NAME, NETWORK_CONFIG, MAX_ORDERS_CACHE
+                    mango_full_config = {
+                        'user_token': mango_config['user_token'],
+                        'api_url': MANGO_API_URL,
+                        'network_config': NETWORK_CONFIG,
+                        'max_orders_cache': MAX_ORDERS_CACHE
+                    }
+
+                    from core.platforms.mango_adapter import MangoAdapter
+                    self.mango_adapter = MangoAdapter(MANGO_PLATFORM_NAME, mango_full_config)
+                    logging.info("✅ 芒果平台适配器已使用数据库配置初始化")
+
             # 【重构】记录初始化结果
             initialized_platforms = []
             if self.haha_adapter:
                 initialized_platforms.append("哈哈")
             if self.mahua_adapter:
                 initialized_platforms.append("麻花")
+            if self.yinghuasuan_adapter:
+                initialized_platforms.append("影划算")
+            if self.mango_adapter:
+                initialized_platforms.append("芒果")
 
             if initialized_platforms:
                 logging.info(f"🎯 平台适配器初始化完成: {', '.join(initialized_platforms)}")
@@ -135,6 +173,8 @@ class Worker(QObject):
             logging.error(f"初始化平台适配器失败: {e}")
             self.haha_adapter = None
             self.mahua_adapter = None
+            self.yinghuasuan_adapter = None
+            self.mango_adapter = None
 
     def run(self):
         """后台任务主方法"""
@@ -181,6 +221,16 @@ class Worker(QObject):
             if self.mahua_adapter and not self.mahua_adapter.is_stopped:
                 available_platforms.append(('麻花', self.mahua_adapter))
                 logging.debug("📋 麻花平台已添加到执行列表")
+
+            logging.debug(f"📋 影划算适配器状态: 存在={self.yinghuasuan_adapter is not None}")
+            if self.yinghuasuan_adapter and self.yinghuasuan_adapter.is_available():
+                available_platforms.append(('影划算', self.yinghuasuan_adapter))
+                logging.debug("📋 影划算平台已添加到执行列表")
+
+            logging.debug(f"📋 芒果适配器状态: 存在={self.mango_adapter is not None}")
+            if self.mango_adapter and self.mango_adapter.is_available():
+                available_platforms.append(('芒果', self.mango_adapter))
+                logging.debug("📋 芒果平台已添加到执行列表")
 
             logging.info(f"📋 总共有 {len(available_platforms)} 个可用平台: {[name for name, _ in available_platforms]}")
 
@@ -255,8 +305,8 @@ class Worker(QObject):
                     # 处理每个新订单
                     for order in new_orders:
                         try:
-                            # 使用规则引擎检查订单
-                            match_result = self.engine.check_order(order)
+                            # 使用规则引擎检查订单（传入平台名称以启用调试记录）
+                            match_result = self.engine.check_order(order, platform_name)
 
                             if match_result:
                                 # ------------------- 恢复至经过验证的、标准的V1版数据打包逻辑开始 -------------------
@@ -335,6 +385,69 @@ class Worker(QObject):
         logging.info(f"Worker线程用户登录状态已更新: {'已登录' if is_logged_in else '未登录'}")
 
 
+class SeckillThread(QThread):
+    """秒杀线程类 - 执行异步秒杀操作"""
+    
+    # 定义秒杀结果信号
+    seckill_result = pyqtSignal(bool, str, str)  # success, message, order_id
+    
+    def __init__(self, worker, order_id: str, opportunity_data: dict):
+        """初始化秒杀线程"""
+        super().__init__()
+        self.worker = worker
+        self.order_id = order_id
+        self.opportunity_data = opportunity_data
+        
+    def run(self):
+        """执行秒杀操作"""
+        try:
+            platform = self.opportunity_data.get('platform', '')
+            order = self.opportunity_data.get('order', {})
+            
+            # 只支持麻花平台
+            if platform != MAHUA_PLATFORM_NAME:
+                self.seckill_result.emit(False, "不支持的平台", self.order_id)
+                return
+            
+            # 检查麻花平台适配器
+            if not self.worker.mahua_adapter:
+                self.seckill_result.emit(False, "麻花平台适配器未初始化", self.order_id)
+                return
+            
+            # 获取竞价价格（使用订单中的价格或默认最低价格）
+            bidding_price = order.get('bidding_price', 0.01)
+            if bidding_price <= 0:
+                bidding_price = 0.01  # 设置最低价格
+            
+            # 创建事件循环并执行异步秒杀
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            try:
+                # 调用麻花平台的秒杀接口
+                result = loop.run_until_complete(
+                    self.worker.mahua_adapter.quick_kill_bidding(
+                        put_order_id=self.order_id,
+                        bidding_price=bidding_price
+                    )
+                )
+                
+                # 解析结果
+                success = result.get('success', False)
+                message = result.get('message', '未知错误')
+                
+                self.seckill_result.emit(success, message, self.order_id)
+                
+            finally:
+                loop.close()
+                
+        except Exception as e:
+            error_msg = f"秒杀执行异常: {str(e)}"
+            logging.error(f"❌ 秒杀线程异常: {error_msg}")
+            self.seckill_result.emit(False, error_msg, self.order_id)
+
+
 class MainWindow(QMainWindow):
     """主窗口类 - 多元化策略引擎界面"""
 
@@ -359,6 +472,16 @@ class MainWindow(QMainWindow):
         # 【守护者之盾】初始化认证管理器
         self.auth_manager = AuthManager()
         self.heartbeat_timer = None
+
+        # 【容错优化】心跳重试机制状态
+        self.heartbeat_retry_count = 0  # 当前重试次数
+        self.heartbeat_retry_timer = None  # 重试定时器
+        self.heartbeat_countdown_timer = None  # 倒计时显示定时器
+        self.heartbeat_countdown_seconds = 0  # 倒计时剩余秒数
+
+        # 【心跳日志】初始化心跳日志记录器
+        from core.heartbeat_logger import get_heartbeat_logger
+        self.heartbeat_logger = get_heartbeat_logger()
 
         # 当前编辑的规则
         self.current_rule = None
@@ -408,12 +531,14 @@ class MainWindow(QMainWindow):
         self.create_monitoring_tab()
         self.create_editor_tab()
         self.create_platform_config_tab()  # 【新增】平台配置Tab
+        self.create_debug_tab()  # 【调试系统】匹配调试Tab
 
         # 【守护者之盾】初始状态：禁用除登录外的所有功能Tab
         self.tab_widget.setTabEnabled(1, False)  # 抢单监控
         self.tab_widget.setTabEnabled(2, False)  # 关键词策略
         self.tab_widget.setTabEnabled(3, False)  # 白名单策略
         self.tab_widget.setTabEnabled(4, False)  # 平台配置
+        self.tab_widget.setTabEnabled(5, False)  # 调试分析
 
         # 创建状态栏
         self.statusBar().showMessage("系统已启动，等待数据...")
@@ -496,9 +621,9 @@ class MainWindow(QMainWindow):
 
         # 创建表格用于显示抢单机会
         self.opportunities_table = QTableWidget()
-        self.opportunities_table.setColumnCount(12)  # 增加2列：影片名称、放映日
+        self.opportunities_table.setColumnCount(13)  # 增加订单号列
         self.opportunities_table.setHorizontalHeaderLabels([
-            "平台", "利润", "票数", "规则", "城市", "影院", "影片名称", "放映日", "影厅", "原价", "捕捉时间", "操作"
+            "操作", "平台", "利润", "票数", "规则", "城市", "影院", "影片名称", "放映日", "影厅", "原价", "捕捉时间", "订单号"
         ])
 
         # 设置表格属性 - 移除高亮效果
@@ -582,6 +707,14 @@ class MainWindow(QMainWindow):
         # 创建哈哈平台配置区域
         self.create_haha_config_group()
         main_layout.addWidget(self.haha_config_group)
+
+        # 【新增】创建影划算平台配置区域
+        self.create_yinghuasuan_config_group()
+        main_layout.addWidget(self.yinghuasuan_config_group)
+
+        # 【新增】创建芒果平台配置区域
+        self.create_mango_config_group()
+        main_layout.addWidget(self.mango_config_group)
 
         # 添加弹性空间
         main_layout.addStretch()
@@ -674,6 +807,68 @@ class MainWindow(QMainWindow):
 
         self.haha_config_group.setLayout(layout)
 
+    def create_yinghuasuan_config_group(self):
+        """创建影划算平台配置组"""
+        self.yinghuasuan_config_group = QGroupBox("影划算平台")
+        layout = QFormLayout()
+
+        # 添加配置说明
+        yinghuasuan_info_label = QLabel("请输入您的影划算平台Bearer Token（JWT认证令牌）\n支持输入完整格式或纯token，系统会自动处理")
+        yinghuasuan_info_label.setWordWrap(True)
+        yinghuasuan_info_label.setStyleSheet("color: #666; font-size: 12px;")
+        layout.addRow(yinghuasuan_info_label)
+
+        # Bearer Token输入框
+        self.yinghuasuan_token_input = QLineEdit()
+        self.yinghuasuan_token_input.setPlaceholderText("eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9... (可包含或不包含Bearer前缀)")
+        layout.addRow("Bearer Token:", self.yinghuasuan_token_input)
+
+        # 测试并应用按钮和结果标签
+        button_layout = QHBoxLayout()
+        self.yinghuasuan_test_apply_btn = QPushButton("测试并应用新配置")
+        self.yinghuasuan_result_label = QLabel("")
+
+        button_layout.addWidget(self.yinghuasuan_test_apply_btn)
+        button_layout.addWidget(self.yinghuasuan_result_label)
+        button_layout.addStretch()
+
+        button_widget = QWidget()
+        button_widget.setLayout(button_layout)
+        layout.addRow("", button_widget)
+
+        self.yinghuasuan_config_group.setLayout(layout)
+
+    def create_mango_config_group(self):
+        """创建芒果平台配置组"""
+        self.mango_config_group = QGroupBox("芒果平台")
+        layout = QFormLayout()
+
+        # 添加配置说明
+        mango_info_label = QLabel("请输入您的芒果平台User Token（JWT认证令牌）")
+        mango_info_label.setWordWrap(True)
+        mango_info_label.setStyleSheet("color: #666; font-size: 12px;")
+        layout.addRow(mango_info_label)
+
+        # User Token输入框
+        self.mango_token_input = QLineEdit()
+        self.mango_token_input.setPlaceholderText("User Token (eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9...")
+        layout.addRow("User Token:", self.mango_token_input)
+
+        # 测试并应用按钮和结果标签
+        button_layout = QHBoxLayout()
+        self.mango_test_apply_btn = QPushButton("测试并应用新配置")
+        self.mango_result_label = QLabel("")
+
+        button_layout.addWidget(self.mango_test_apply_btn)
+        button_layout.addWidget(self.mango_result_label)
+        button_layout.addStretch()
+
+        button_widget = QWidget()
+        button_widget.setLayout(button_layout)
+        layout.addRow("", button_widget)
+
+        self.mango_config_group.setLayout(layout)
+
     def toggle_mahua_password_visibility(self):
         """切换麻花平台密钥显示/隐藏"""
         if self.mahua_toggle_password_btn.isChecked():
@@ -695,6 +890,14 @@ class MainWindow(QMainWindow):
             # 哈哈平台控件
             self.haha_token_input.setEnabled(enabled)
             self.haha_test_apply_btn.setEnabled(enabled)
+
+            # 影划算平台控件
+            self.yinghuasuan_token_input.setEnabled(enabled)
+            self.yinghuasuan_test_apply_btn.setEnabled(enabled)
+
+            # 芒果平台控件
+            self.mango_token_input.setEnabled(enabled)
+            self.mango_test_apply_btn.setEnabled(enabled)
 
             logging.info(f"平台配置控件状态已设置为: {'启用' if enabled else '禁用'}")
         except AttributeError as e:
@@ -718,6 +921,16 @@ class MainWindow(QMainWindow):
                 haha_config = credentials.get('haha', {})
                 if haha_config:
                     self.haha_token_input.setText(haha_config.get('token', ''))
+
+                # 恢复影划算平台配置
+                yinghuasuan_config = credentials.get('yinghuasuan', {})
+                if yinghuasuan_config:
+                    self.yinghuasuan_token_input.setText(yinghuasuan_config.get('bearer_token', ''))
+
+                # 恢复芒果平台配置
+                mango_config = credentials.get('mango', {})
+                if mango_config:
+                    self.mango_token_input.setText(mango_config.get('user_token', ''))
 
                 logging.info("平台凭证配置已从数据库恢复")
             else:
@@ -774,6 +987,12 @@ class MainWindow(QMainWindow):
                 },
                 'haha': {
                     'token': self.haha_token_input.text().strip()
+                },
+                'yinghuasuan': {
+                    'bearer_token': self.yinghuasuan_token_input.text().strip()
+                },
+                'mango': {
+                    'user_token': self.mango_token_input.text().strip()
                 }
             }
 
@@ -824,6 +1043,30 @@ class MainWindow(QMainWindow):
                 existing_credentials['haha'] = {
                     'token': new_token
                 }
+            elif platform_name == 'yinghuasuan':
+                new_bearer_token = self.yinghuasuan_token_input.text().strip()
+                
+                # 【修复Bearer Token重复前缀问题】
+                # 如果用户输入包含"Bearer "前缀，去掉它，只存储纯token
+                if new_bearer_token.startswith('Bearer '):
+                    new_bearer_token = new_bearer_token[7:].strip()  # 去掉"Bearer "前缀并清理空格
+                    logging.info(f"📋 检测到Bearer前缀，已自动去除，存储纯token")
+
+                logging.info(f"📋 影划算平台新配置:")
+                logging.info(f"  bearer_token: '{new_bearer_token}'")
+
+                existing_credentials['yinghuasuan'] = {
+                    'bearer_token': new_bearer_token
+                }
+            elif platform_name == 'mango':
+                new_user_token = self.mango_token_input.text().strip()
+
+                logging.info(f"📋 芒果平台新配置:")
+                logging.info(f"  user_token: '{new_user_token}'")
+
+                existing_credentials['mango'] = {
+                    'user_token': new_user_token
+                }
             else:
                 logging.error(f"未知的平台类型: {platform_name}")
                 logging.error(f"📋 {platform_name}平台配置保存失败，返回False（未知平台类型）")
@@ -852,9 +1095,340 @@ class MainWindow(QMainWindow):
             # 连接哈哈平台测试按钮
             self.haha_test_apply_btn.clicked.connect(self.test_and_apply_haha_config)
 
+            # 连接影划算平台测试按钮
+            self.yinghuasuan_test_apply_btn.clicked.connect(self.test_and_apply_yinghuasuan_config)
+
+            # 连接芒果平台测试按钮
+            self.mango_test_apply_btn.clicked.connect(self.test_and_apply_mango_config)
+
             logging.info("平台配置信号连接完成")
         except Exception as e:
             logging.error(f"连接平台配置信号失败: {e}")
+
+    def create_debug_tab(self):
+        """【调试系统】创建匹配调试Tab"""
+        # 创建调试Tab容器
+        self.debug_tab = QWidget()
+        
+        # 创建主布局
+        main_layout = QVBoxLayout()
+        
+        # 创建统计信息区域
+        stats_group = QGroupBox("匹配统计信息")
+        stats_layout = QVBoxLayout()
+        
+        # 创建统计标签
+        self.debug_stats_label = QLabel("加载中...")
+        self.debug_stats_label.setStyleSheet("font-family: 'Courier New'; background-color: #f8f9fa; padding: 10px; border-radius: 5px;")
+        stats_layout.addWidget(self.debug_stats_label)
+        
+        # 刷新统计按钮
+        refresh_stats_btn = QPushButton("刷新统计")
+        refresh_stats_btn.clicked.connect(self.refresh_debug_statistics)
+        stats_layout.addWidget(refresh_stats_btn)
+        
+        stats_group.setLayout(stats_layout)
+        main_layout.addWidget(stats_group)
+        
+        # 创建查询条件区域
+        query_group = QGroupBox("查询条件")
+        query_layout = QFormLayout()
+        
+        # 平台选择
+        self.debug_platform_combo = QComboBox()
+        self.debug_platform_combo.addItems(["全部", "哈哈", "麻花", "影划算", "芒果"])
+        query_layout.addRow("平台:", self.debug_platform_combo)
+        
+        # 规则类型选择
+        self.debug_rule_type_combo = QComboBox()
+        self.debug_rule_type_combo.addItems(["全部", "keyword", "whitelist"])
+        query_layout.addRow("规则类型:", self.debug_rule_type_combo)
+        
+        # 订单ID搜索
+        self.debug_order_id_input = QLineEdit()
+        self.debug_order_id_input.setPlaceholderText("输入订单ID进行精确查询")
+        query_layout.addRow("订单ID:", self.debug_order_id_input)
+        
+        # 数量限制
+        self.debug_limit_spin = QSpinBox()
+        self.debug_limit_spin.setRange(10, 1000)
+        self.debug_limit_spin.setValue(100)
+        query_layout.addRow("显示数量:", self.debug_limit_spin)
+        
+        # 查询按钮
+        query_btn = QPushButton("查询匹配记录")
+        query_btn.clicked.connect(self.query_debug_records)
+        query_layout.addRow(query_btn)
+        
+        query_group.setLayout(query_layout)
+        main_layout.addWidget(query_group)
+        
+        # 创建结果显示区域
+        results_group = QGroupBox("匹配记录详情")
+        results_layout = QVBoxLayout()
+        
+        # 创建匹配记录表格
+        self.debug_records_table = QTableWidget()
+        self.debug_records_table.setAlternatingRowColors(True)
+        self.debug_records_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.debug_records_table.setHorizontalScrollMode(QTableWidget.ScrollMode.ScrollPerPixel)
+        
+        # 设置表格列
+        headers = ["时间", "平台", "订单ID", "规则名称", "规则类型", "利润", "座位", "影院", "电影", "计算详情"]
+        self.debug_records_table.setColumnCount(len(headers))
+        self.debug_records_table.setHorizontalHeaderLabels(headers)
+        
+        # 连接双击事件
+        self.debug_records_table.doubleClicked.connect(self.show_debug_record_detail)
+        
+        results_layout.addWidget(self.debug_records_table)
+        
+        # 添加操作按钮
+        buttons_layout = QHBoxLayout()
+        
+        export_btn = QPushButton("导出记录")
+        export_btn.clicked.connect(self.export_debug_records)
+        buttons_layout.addWidget(export_btn)
+        
+        clear_btn = QPushButton("清理旧记录")
+        clear_btn.clicked.connect(self.clear_old_debug_records)
+        buttons_layout.addWidget(clear_btn)
+        
+        buttons_layout.addStretch()
+        results_layout.addLayout(buttons_layout)
+        
+        results_group.setLayout(results_layout)
+        main_layout.addWidget(results_group)
+        
+        # 设置Tab布局
+        self.debug_tab.setLayout(main_layout)
+        
+        # 添加到Tab容器
+        self.tab_widget.addTab(self.debug_tab, "调试分析")
+        
+        # 初始化加载数据
+        self.refresh_debug_statistics()
+        self.query_debug_records()
+
+    def refresh_debug_statistics(self):
+        """刷新调试统计信息"""
+        try:
+            stats = self.engine.get_debug_statistics()
+            
+            stats_text = f"""
+总匹配记录数: {stats.get('total_matches', 0)}
+最近24小时: {stats.get('recent_24h', 0)}
+
+按规则类型统计:
+"""
+            for rule_type, count in stats.get('by_rule_type', {}).items():
+                stats_text += f"  {rule_type}: {count}\n"
+            
+            stats_text += "\n按平台统计:\n"
+            for platform, count in stats.get('by_platform', {}).items():
+                stats_text += f"  {platform}: {count}\n"
+                
+            stats_text += "\n活跃规则TOP10:\n"
+            for rule_name, count in list(stats.get('top_rules', {}).items())[:10]:
+                stats_text += f"  {rule_name}: {count}\n"
+            
+            self.debug_stats_label.setText(stats_text.strip())
+            
+        except Exception as e:
+            self.debug_stats_label.setText(f"加载统计信息失败: {e}")
+            logging.error(f"刷新调试统计失败: {e}")
+
+    def query_debug_records(self):
+        """查询匹配记录"""
+        try:
+            # 构建查询参数
+            kwargs = {
+                'limit': self.debug_limit_spin.value()
+            }
+            
+            # 平台过滤
+            platform = self.debug_platform_combo.currentText()
+            if platform != "全部":
+                kwargs['platform_name'] = platform
+            
+            # 规则类型过滤
+            rule_type = self.debug_rule_type_combo.currentText()
+            if rule_type != "全部":
+                kwargs['rule_type'] = rule_type
+            
+            # 订单ID过滤
+            order_id = self.debug_order_id_input.text().strip()
+            if order_id:
+                kwargs['order_id'] = order_id
+            
+            # 查询记录
+            records = self.engine.query_match_records(**kwargs)
+            
+            # 更新表格
+            self.debug_records_table.setRowCount(len(records))
+            
+            for row, record in enumerate(records):
+                # 提取数据
+                created_at = record.get('created_at', '')
+                platform_name = record.get('platform_name', '')
+                order_id = record.get('order_id', '')
+                rule_name = record.get('rule_name', '')
+                rule_type = record.get('rule_type', '')
+                
+                profit_calc = record.get('profit_calculation', {})
+                total_profit = profit_calc.get('total_profit', 0)
+                seat_count = profit_calc.get('seat_count', 0)
+                
+                order_data = record.get('order_data', {})
+                cinema_name = order_data.get('cinema_name', '')
+                movie_name = order_data.get('movie_name', '')
+                
+                calc_formula = profit_calc.get('calculation_formula', '')
+                
+                # 设置表格项
+                items = [
+                    created_at,
+                    platform_name,
+                    order_id,
+                    rule_name,
+                    rule_type,
+                    f"{total_profit:.2f}",
+                    str(seat_count),
+                    cinema_name,
+                    movie_name,
+                    calc_formula
+                ]
+                
+                for col, item_text in enumerate(items):
+                    item = QTableWidgetItem(str(item_text))
+                    self.debug_records_table.setItem(row, col, item)
+            
+            # 自动调整列宽
+            self.debug_records_table.resizeColumnsToContents()
+            
+            logging.info(f"查询到 {len(records)} 条匹配记录")
+            
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"查询匹配记录失败: {e}")
+            logging.error(f"查询调试记录失败: {e}")
+
+    def show_debug_record_detail(self):
+        """显示匹配记录详情"""
+        try:
+            current_row = self.debug_records_table.currentRow()
+            if current_row < 0:
+                return
+            
+            # 获取订单ID
+            order_id_item = self.debug_records_table.item(current_row, 2)
+            if not order_id_item:
+                return
+                
+            order_id = order_id_item.text()
+            
+            # 查询详细记录
+            records = self.engine.query_match_records(order_id=order_id, limit=1)
+            if not records:
+                QMessageBox.information(self, "提示", "未找到该记录的详细信息")
+                return
+            
+            record = records[0]
+            
+            # 构建详情文本
+            detail_text = f"""
+匹配记录详情
+
+基本信息:
+记录ID: {record.get('record_id', '')}
+订单ID: {record.get('order_id', '')}
+平台: {record.get('platform_name', '')}
+匹配时间: {record.get('created_at', '')}
+
+规则信息:
+规则ID: {record.get('rule_id', '')}
+规则名称: {record.get('rule_name', '')}
+规则类型: {record.get('rule_type', '')}
+
+订单详情:
+"""
+            order_data = record.get('order_data', {})
+            for key, value in order_data.items():
+                detail_text += f"{key}: {value}\n"
+            
+            detail_text += "\n匹配过程详情:\n"
+            match_details = record.get('match_details', {})
+            detail_text += json.dumps(match_details, indent=2, ensure_ascii=False)
+            
+            detail_text += "\n\n利润计算详情:\n"
+            profit_calc = record.get('profit_calculation', {})
+            detail_text += json.dumps(profit_calc, indent=2, ensure_ascii=False)
+            
+            # 显示详情对话框
+            dialog = QMessageBox()
+            dialog.setWindowTitle("匹配记录详情")
+            dialog.setText(detail_text)
+            dialog.setDetailedText(json.dumps(record, indent=2, ensure_ascii=False))
+            dialog.setStandardButtons(QMessageBox.StandardButton.Ok)
+            dialog.exec()
+            
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"显示记录详情失败: {e}")
+            logging.error(f"显示调试记录详情失败: {e}")
+
+    def export_debug_records(self):
+        """导出匹配记录"""
+        try:
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "导出匹配记录", f"match_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+                "JSON文件 (*.json);;所有文件 (*)"
+            )
+            
+            if not file_path:
+                return
+            
+            # 获取当前查询的记录
+            kwargs = {'limit': 1000}  # 导出更多记录
+            
+            platform = self.debug_platform_combo.currentText()
+            if platform != "全部":
+                kwargs['platform_name'] = platform
+            
+            rule_type = self.debug_rule_type_combo.currentText()
+            if rule_type != "全部":
+                kwargs['rule_type'] = rule_type
+            
+            records = self.engine.query_match_records(**kwargs)
+            
+            # 保存到文件
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(records, f, indent=2, ensure_ascii=False)
+            
+            QMessageBox.information(self, "成功", f"已导出 {len(records)} 条记录到\n{file_path}")
+            
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"导出记录失败: {e}")
+            logging.error(f"导出调试记录失败: {e}")
+
+    def clear_old_debug_records(self):
+        """清理旧的匹配记录"""
+        try:
+            reply = QMessageBox.question(
+                self, "确认清理", 
+                "确定要清理30天前的匹配记录吗？\n这个操作不可逆转。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                deleted_count = self.db_manager.clear_old_match_records(30)
+                QMessageBox.information(self, "清理完成", f"已清理 {deleted_count} 条旧记录")
+                
+                # 刷新显示
+                self.refresh_debug_statistics()
+                self.query_debug_records()
+                
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"清理记录失败: {e}")
+            logging.error(f"清理旧调试记录失败: {e}")
 
     def test_and_apply_mahua_config(self):
         """【新增】测试并应用麻花平台配置"""
@@ -1043,6 +1617,146 @@ class MainWindow(QMainWindow):
             logging.error(f"❌ 处理哈哈平台测试结果异常: {e}")
         finally:
             self.haha_test_apply_btn.setEnabled(True)
+
+    def test_and_apply_yinghuasuan_config(self):
+        """【新增】测试并应用影划算平台配置"""
+        try:
+            # 禁用按钮，防止重复点击
+            self.yinghuasuan_test_apply_btn.setEnabled(False)
+            self.yinghuasuan_result_label.setText("正在测试连接...")
+            self.yinghuasuan_result_label.setStyleSheet("color: #3498db;")
+
+            # 获取输入的配置
+            bearer_token = self.yinghuasuan_token_input.text().strip()
+            
+            # 【修复Bearer Token重复前缀问题】
+            # 如果用户输入包含"Bearer "前缀，去掉它，只存储纯token
+            if bearer_token.startswith('Bearer '):
+                bearer_token = bearer_token[7:].strip()  # 去掉"Bearer "前缀并清理空格
+                logging.info(f"📋 测试时检测到Bearer前缀，已自动去除")
+
+            # 验证输入
+            if not bearer_token:
+                self.yinghuasuan_result_label.setText("❌ 请填写Bearer Token信息")
+                self.yinghuasuan_result_label.setStyleSheet("color: #e74c3c;")
+                return
+
+            # 从config.py获取影划算平台配置
+            from config import YINGHUASUAN_API_URL, NETWORK_CONFIG, MAX_ORDERS_CACHE
+
+            # 构建测试配置
+            test_config = {
+                'bearer_token': bearer_token,
+                'api_url': YINGHUASUAN_API_URL,
+                'network_config': NETWORK_CONFIG,
+                'max_orders_cache': MAX_ORDERS_CACHE
+            }
+
+            # 创建测试线程
+            self.yinghuasuan_test_thread = RealAPITestThread('yinghuasuan', test_config)
+            self.yinghuasuan_test_thread.test_result.connect(self.on_yinghuasuan_test_result)
+            self.yinghuasuan_test_thread.start()
+
+        except Exception as e:
+            logging.error(f"测试影划算平台配置异常: {e}")
+            self.yinghuasuan_result_label.setText(f"❌ 测试异常: {str(e)}")
+            self.yinghuasuan_result_label.setStyleSheet("color: #e74c3c;")
+        finally:
+            # 确保按钮最终会被重新启用
+            if hasattr(self, 'yinghuasuan_test_thread') and not self.yinghuasuan_test_thread.isRunning():
+                self.yinghuasuan_test_apply_btn.setEnabled(True)
+
+    def on_yinghuasuan_test_result(self, success, message):
+        """【新增】处理影划算平台测试结果"""
+        try:
+            if success:
+                # 测试成功，保存影划算平台配置
+                if self.save_specific_platform_credentials('yinghuasuan'):
+                    self.yinghuasuan_result_label.setText("✅ 连接成功并已应用！")
+                    self.yinghuasuan_result_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+
+                    # 发射配置更新信号进行热更新
+                    self.platform_config_updated.emit()
+
+                    logging.info("✅ 影划算平台配置测试成功并已保存")
+                else:
+                    self.yinghuasuan_result_label.setText("✅ 连接成功，但保存失败")
+                    self.yinghuasuan_result_label.setStyleSheet("color: #f39c12;")
+            else:
+                self.yinghuasuan_result_label.setText(f"❌ 连接失败: {message}")
+                self.yinghuasuan_result_label.setStyleSheet("color: #e74c3c;")
+
+        except Exception as e:
+            logging.error(f"❌ 处理影划算平台测试结果异常: {e}")
+        finally:
+            self.yinghuasuan_test_apply_btn.setEnabled(True)
+
+    def test_and_apply_mango_config(self):
+        """【新增】测试并应用芒果平台配置"""
+        try:
+            # 禁用按钮，防止重复点击
+            self.mango_test_apply_btn.setEnabled(False)
+            self.mango_result_label.setText("正在测试连接...")
+            self.mango_result_label.setStyleSheet("color: #3498db;")
+
+            # 获取输入的配置
+            user_token = self.mango_token_input.text().strip()
+
+            # 验证输入
+            if not user_token:
+                self.mango_result_label.setText("❌ 请填写User Token信息")
+                self.mango_result_label.setStyleSheet("color: #e74c3c;")
+                return
+
+            # 从config.py获取芒果平台配置
+            from config import MANGO_API_URL, NETWORK_CONFIG, MAX_ORDERS_CACHE
+
+            # 构建测试配置
+            test_config = {
+                'user_token': user_token,
+                'api_url': MANGO_API_URL,
+                'network_config': NETWORK_CONFIG,
+                'max_orders_cache': MAX_ORDERS_CACHE
+            }
+
+            # 创建测试线程
+            self.mango_test_thread = RealAPITestThread('mango', test_config)
+            self.mango_test_thread.test_result.connect(self.on_mango_test_result)
+            self.mango_test_thread.start()
+
+        except Exception as e:
+            logging.error(f"测试芒果平台配置异常: {e}")
+            self.mango_result_label.setText(f"❌ 测试异常: {str(e)}")
+            self.mango_result_label.setStyleSheet("color: #e74c3c;")
+        finally:
+            # 确保按钮最终会被重新启用
+            if hasattr(self, 'mango_test_thread') and not self.mango_test_thread.isRunning():
+                self.mango_test_apply_btn.setEnabled(True)
+
+    def on_mango_test_result(self, success, message):
+        """【新增】处理芒果平台测试结果"""
+        try:
+            if success:
+                # 测试成功，保存芒果平台配置
+                if self.save_specific_platform_credentials('mango'):
+                    self.mango_result_label.setText("✅ 连接成功并已应用！")
+                    self.mango_result_label.setStyleSheet("color: #27ae60; font-weight: bold;")
+
+                    # 发射配置更新信号进行热更新
+                    self.platform_config_updated.emit()
+
+                    logging.info("✅ 芒果平台配置测试成功并已保存")
+                else:
+                    self.mango_result_label.setText("✅ 连接成功，但保存失败")
+                    self.mango_result_label.setStyleSheet("color: #f39c12;")
+            else:
+                self.mango_result_label.setText(f"❌ 连接失败: {message}")
+                self.mango_result_label.setStyleSheet("color: #e74c3c;")
+
+        except Exception as e:
+            logging.error(f"❌ 处理芒果平台测试结果异常: {e}")
+        finally:
+            self.mango_test_apply_btn.setEnabled(True)
 
     def create_left_panel(self):
         """创建左侧面板"""
@@ -2246,7 +2960,38 @@ class MainWindow(QMainWindow):
                     logging.debug(f"解析放映时间失败: {show_timestamp}, 错误: {e}")
                     show_day = "未知"
 
-            # 按新的列顺序填充数据：平台、利润、票数、规则、城市、影院、影片名称、放映日、影厅、原价、捕捉时间
+            # 首先添加操作按钮到第0列
+            cinema_name = order.get('cinema_name', '')
+            order_id = order.get('order_id', '')
+            platform = opportunity_data.get('platform', '')
+            
+            # 创建水平布局容器
+            button_widget = QWidget()
+            button_layout = QHBoxLayout(button_widget)
+            button_layout.setContentsMargins(2, 2, 2, 2)
+            button_layout.setSpacing(2)
+            
+            # 复制影院按钮
+            copy_button = QPushButton("复制影院")
+            copy_button.setMaximumHeight(25)
+            copy_button.clicked.connect(lambda: self.copy_cinema_name(cinema_name))
+            
+            # 秒杀按钮 - 只对麻花平台显示
+            if platform == MAHUA_PLATFORM_NAME:
+                kill_button = QPushButton("秒杀")
+                kill_button.setMaximumHeight(25)
+                kill_button.setStyleSheet("QPushButton { background-color: #e74c3c; color: white; font-weight: bold; }")
+                kill_button.clicked.connect(lambda: self.quick_kill_order(order_id, opportunity_data))
+                button_layout.addWidget(copy_button)
+                button_layout.addWidget(kill_button)
+            else:
+                # 非麻花平台只显示复制按钮
+                button_layout.addWidget(copy_button)
+            
+            # 设置操作按钮到第0列
+            self.opportunities_table.setCellWidget(row_position, 0, button_widget)
+
+            # 按新的列顺序填充数据：操作、平台、利润、票数、规则、城市、影院、影片名称、放映日、影厅、原价、捕捉时间、订单号
             items = [
                 opportunity_data['platform'],                    # 平台
                 profit_text,                                     # 利润
@@ -2258,24 +3003,20 @@ class MainWindow(QMainWindow):
                 show_day,                                        # 放映日（新增）
                 order.get('hall_type', ''),                     # 影厅
                 f"{order.get('original_price', order.get('bidding_price', 0)):.2f}元",  # 原价
-                capture_time                                     # 捕捉时间
+                capture_time,                                    # 捕捉时间
+                order.get('order_id', '')                       # 订单号（新增）
             ]
 
-            # 填充前11列的数据
+            # 填充第1-12列的数据（跳过第0列的操作按钮）
             for col, item_text in enumerate(items):
                 item = QTableWidgetItem(str(item_text))
 
-                # 设置利润列的颜色
+                # 设置利润列的颜色（现在是第2列）
                 if col == 1:  # 利润列
                     item.setForeground(QColor(255, 0, 0))  # 红色
 
-                self.opportunities_table.setItem(row_position, col, item)
-
-            # 第12列：添加"复制影院"按钮
-            cinema_name = order.get('cinema_name', '')
-            copy_button = QPushButton("复制影院")
-            copy_button.clicked.connect(lambda: self.copy_cinema_name(cinema_name))
-            self.opportunities_table.setCellWidget(row_position, 11, copy_button)  # 第12列（索引11）
+                # 数据填充到第1列开始（col+1）
+                self.opportunities_table.setItem(row_position, col + 1, item)
 
             # 自动滚动到最新行
             self.opportunities_table.scrollToBottom()
@@ -2295,6 +3036,74 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logging.error(f"复制影院名称失败: {e}")
             self.statusBar().showMessage("复制失败", 2000)
+
+    def quick_kill_order(self, order_id: str, opportunity_data: dict):
+        """秒杀订单功能 - 使用积分抢单模式"""
+        try:
+            platform = opportunity_data.get('platform', '')
+            order = opportunity_data.get('order', {})
+            
+            # 只支持麻花平台
+            if platform != MAHUA_PLATFORM_NAME:
+                QMessageBox.warning(self, "不支持", "秒杀功能仅支持麻花平台订单")
+                return
+            
+            # 检查订单ID
+            if not order_id:
+                QMessageBox.warning(self, "参数错误", "订单ID为空，无法执行秒杀")
+                return
+            
+            # 显示确认对话框
+            reply = QMessageBox.question(
+                self,
+                "确认秒杀",
+                f"确定要秒杀订单 {order_id} 吗？\n\n"
+                f"影院: {order.get('cinema_name', '未知')}\n"
+                f"电影: {order.get('movie_name', '未知')}\n"
+                f"价格: {order.get('bidding_price', 0)}\n\n"
+                f"⚠️ 将使用积分抢单模式，立即获得订单！",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                # 记录秒杀尝试
+                logging.info(f"🚀 用户确认秒杀订单: {order_id}, 平台: {platform}")
+                self.statusBar().showMessage(f"正在秒杀订单 {order_id}...", 5000)
+                
+                # 创建秒杀线程
+                self.seckill_thread = SeckillThread(self.worker, order_id, opportunity_data)
+                self.seckill_thread.seckill_result.connect(self.on_seckill_result)
+                self.seckill_thread.start()
+                
+        except Exception as e:
+            logging.error(f"秒杀订单异常: {e}")
+            QMessageBox.critical(self, "系统错误", f"秒杀功能发生异常: {str(e)}")
+
+    def on_seckill_result(self, success: bool, message: str, order_id: str):
+        """处理秒杀结果"""
+        try:
+            if success:
+                # 秒杀成功
+                QMessageBox.information(
+                    self,
+                    "秒杀成功",
+                    f"🎉 订单 {order_id} 秒杀成功！\n\n{message}"
+                )
+                self.statusBar().showMessage(f"✅ 订单 {order_id} 秒杀成功!", 10000)
+                logging.info(f"✅ 订单 {order_id} 秒杀成功: {message}")
+            else:
+                # 秒杀失败
+                QMessageBox.warning(
+                    self,
+                    "秒杀失败", 
+                    f"❌ 订单 {order_id} 秒杀失败\n\n{message}"
+                )
+                self.statusBar().showMessage(f"❌ 订单 {order_id} 秒杀失败", 5000)
+                logging.warning(f"❌ 订单 {order_id} 秒杀失败: {message}")
+                
+        except Exception as e:
+            logging.error(f"处理秒杀结果异常: {e}")
 
     def clear_opportunities_table(self):
         """清空抢单机会列表"""
@@ -2347,6 +3156,15 @@ class MainWindow(QMainWindow):
             if hasattr(self, 'worker_thread') and self.worker_thread.isRunning():
                 self.worker_thread.quit()
                 self.worker_thread.wait(3000)  # 等待最多3秒
+
+            # 【容错优化】清理心跳重试定时器
+            if hasattr(self, 'heartbeat_retry_timer') and self.heartbeat_retry_timer:
+                self.heartbeat_retry_timer.stop()
+                self.heartbeat_retry_timer = None
+
+            if hasattr(self, 'heartbeat_countdown_timer') and self.heartbeat_countdown_timer:
+                self.heartbeat_countdown_timer.stop()
+                self.heartbeat_countdown_timer = None
 
             # 关闭数据库连接
             if hasattr(self, 'db_manager'):
@@ -2431,6 +3249,7 @@ class MainWindow(QMainWindow):
                 self.tab_widget.setTabEnabled(2, True)  # 关键词策略
                 self.tab_widget.setTabEnabled(3, True)  # 白名单策略
                 self.tab_widget.setTabEnabled(4, True)  # 平台配置
+                self.tab_widget.setTabEnabled(5, True)  # 调试分析
 
                 # 【新增】启用平台配置Tab中的所有控件
                 self.enable_platform_config_controls(True)
@@ -2529,51 +3348,214 @@ class MainWindow(QMainWindow):
         try:
             logging.info("执行心跳验证...")
 
+            # 【心跳日志】记录状态变更
+            self.heartbeat_logger.log_heartbeat_state_change(
+                old_state="idle",
+                new_state="validating",
+                trigger="scheduled_timeout",
+                details="定时心跳验证触发"
+            )
+
             # 创建心跳验证线程
-            self.heartbeat_thread = HeartbeatThread(self.auth_manager)
+            self.heartbeat_thread = HeartbeatThread(self.auth_manager, heartbeat_type="scheduled")
             self.heartbeat_thread.heartbeat_result.connect(self.on_heartbeat_result)
             self.heartbeat_thread.start()
 
         except Exception as e:
             logging.error(f"启动心跳验证异常: {e}")
 
+            # 【心跳日志】记录启动异常
+            self.heartbeat_logger.log_heartbeat_network_error(
+                error_type="other",
+                error_message=f"启动心跳验证线程失败: {str(e)}"
+            )
+
     def on_heartbeat_result(self, success, message):
-        """处理心跳验证结果"""
+        """处理心跳验证结果 - 带重试机制"""
         try:
             if not success:
                 # 心跳验证失败
-                logging.warning(f"心跳验证失败: {message}")
+                logging.warning(f"心跳验证失败 (第{self.heartbeat_retry_count + 1}次): {message}")
 
-                # 禁用所有功能Tab
-                self.tab_widget.setTabEnabled(1, False)  # 抢单监控
-                self.tab_widget.setTabEnabled(2, False)  # 关键词策略
-                self.tab_widget.setTabEnabled(3, False)  # 白名单策略
+                if self.heartbeat_retry_count == 0:
+                    # 第一次失败，启动重试机制
+                    self.heartbeat_retry_count = 1
+                    logging.info("启动心跳验证重试机制，90秒后进行第二次验证")
 
-                # 切换到登录Tab
-                self.tab_widget.setCurrentIndex(0)
+                    # 【心跳日志】记录状态变更和重试计划
+                    self.heartbeat_logger.log_heartbeat_state_change(
+                        old_state="validating",
+                        new_state="retry_pending",
+                        trigger="first_failure",
+                        details=f"第一次验证失败，原因: {message}"
+                    )
 
-                # 显示错误对话框
-                friendly_message = get_user_friendly_message(message)
+                    self.heartbeat_logger.log_heartbeat_retry(
+                        retry_count=1,
+                        max_retries=2,
+                        retry_interval=90,
+                        reason=f"第一次心跳验证失败: {message}"
+                    )
 
-                from PyQt6.QtCore import QTimer
+                    # 在状态栏显示重试提示
+                    self.statusBar().showMessage("⚠️ 心跳验证失败，90秒后自动重试...", 0)
 
-                # 创建模态对话框
-                msg_box = QMessageBox(self)
-                msg_box.setIcon(QMessageBox.Icon.Critical)
-                msg_box.setWindowTitle("会话验证失败")
-                msg_box.setText(f"会话验证失败：{friendly_message}\n\n程序将在5秒后关闭。")
-                msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+                    # 启动90秒倒计时显示
+                    self.start_heartbeat_countdown(90)
 
-                # 5秒后自动关闭程序
-                QTimer.singleShot(5000, self.close)
+                    # 90秒后进行重试
+                    from PyQt6.QtCore import QTimer
+                    self.heartbeat_retry_timer = QTimer()
+                    self.heartbeat_retry_timer.setSingleShot(True)
+                    self.heartbeat_retry_timer.timeout.connect(self.retry_heartbeat_validation)
+                    self.heartbeat_retry_timer.start(90000)  # 90秒
 
-                msg_box.exec()
+                else:
+                    # 第二次失败，执行原有的关闭逻辑
+                    logging.error(f"心跳验证重试失败，连续失败2次，准备关闭应用程序")
+
+                    # 【心跳日志】记录最终失败和应用关闭
+                    self.heartbeat_logger.log_heartbeat_state_change(
+                        old_state="retry_validating",
+                        new_state="failed_closing",
+                        trigger="second_failure",
+                        details=f"连续2次验证失败，最后失败原因: {message}"
+                    )
+
+                    # 停止倒计时显示
+                    self.stop_heartbeat_countdown()
+
+                    # 禁用所有功能Tab
+                    self.tab_widget.setTabEnabled(1, False)  # 抢单监控
+                    self.tab_widget.setTabEnabled(2, False)  # 关键词策略
+                    self.tab_widget.setTabEnabled(3, False)  # 白名单策略
+                    self.tab_widget.setTabEnabled(4, False)  # 平台配置
+                    self.tab_widget.setTabEnabled(5, False)  # 调试分析
+
+                    # 切换到登录Tab
+                    self.tab_widget.setCurrentIndex(0)
+
+                    # 显示错误对话框
+                    friendly_message = get_user_friendly_message(message)
+
+                    from PyQt6.QtCore import QTimer
+
+                    # 创建模态对话框
+                    msg_box = QMessageBox(self)
+                    msg_box.setIcon(QMessageBox.Icon.Critical)
+                    msg_box.setWindowTitle("会话验证失败")
+                    msg_box.setText(f"会话验证失败：{friendly_message}\n\n程序将在5秒后关闭。")
+                    msg_box.setStandardButtons(QMessageBox.StandardButton.Ok)
+
+                    # 5秒后自动关闭程序
+                    QTimer.singleShot(5000, self.close)
+
+                    msg_box.exec()
 
             else:
+                # 心跳验证成功
                 logging.debug("心跳验证成功")
+
+                # 【心跳日志】记录成功状态变更
+                old_state = "retry_validating" if self.heartbeat_retry_count > 0 else "validating"
+                recovery_info = "从失败状态恢复" if self.heartbeat_retry_count > 0 else "正常验证成功"
+
+                self.heartbeat_logger.log_heartbeat_state_change(
+                    old_state=old_state,
+                    new_state="success",
+                    trigger="validation_success",
+                    details=recovery_info
+                )
+
+                # 重置重试计数器
+                if self.heartbeat_retry_count > 0:
+                    logging.info("心跳验证恢复正常，重置重试计数器")
+                    self.heartbeat_retry_count = 0
+
+                # 停止倒计时显示
+                self.stop_heartbeat_countdown()
+
+                # 清除状态栏消息
+                self.statusBar().clearMessage()
 
         except Exception as e:
             logging.error(f"处理心跳验证结果异常: {e}")
+
+    def retry_heartbeat_validation(self):
+        """执行心跳验证重试"""
+        try:
+            logging.info("开始执行心跳验证重试...")
+
+            # 【心跳日志】记录重试开始
+            self.heartbeat_logger.log_heartbeat_state_change(
+                old_state="retry_pending",
+                new_state="retry_validating",
+                trigger="retry_timer_timeout",
+                details="90秒重试间隔结束，开始执行重试验证"
+            )
+
+            # 停止倒计时显示
+            self.stop_heartbeat_countdown()
+
+            # 在状态栏显示重试状态
+            self.statusBar().showMessage("🔄 正在进行心跳验证重试...", 0)
+
+            # 创建心跳验证线程
+            self.heartbeat_thread = HeartbeatThread(self.auth_manager, heartbeat_type="retry")
+            self.heartbeat_thread.heartbeat_result.connect(self.on_heartbeat_result)
+            self.heartbeat_thread.start()
+
+        except Exception as e:
+            logging.error(f"执行心跳验证重试异常: {e}")
+
+            # 【心跳日志】记录重试启动异常
+            self.heartbeat_logger.log_heartbeat_network_error(
+                error_type="other",
+                error_message=f"启动心跳验证重试线程失败: {str(e)}"
+            )
+
+    def start_heartbeat_countdown(self, seconds):
+        """启动心跳重试倒计时显示"""
+        try:
+            self.heartbeat_countdown_seconds = seconds
+
+            # 创建倒计时定时器
+            from PyQt6.QtCore import QTimer
+            self.heartbeat_countdown_timer = QTimer()
+            self.heartbeat_countdown_timer.timeout.connect(self.update_heartbeat_countdown)
+            self.heartbeat_countdown_timer.start(1000)  # 每秒更新一次
+
+            # 立即更新一次显示
+            self.update_heartbeat_countdown()
+
+        except Exception as e:
+            logging.error(f"启动心跳倒计时显示异常: {e}")
+
+    def update_heartbeat_countdown(self):
+        """更新心跳重试倒计时显示"""
+        try:
+            if self.heartbeat_countdown_seconds > 0:
+                self.statusBar().showMessage(f"⚠️ 心跳验证失败，{self.heartbeat_countdown_seconds}秒后自动重试...", 0)
+                self.heartbeat_countdown_seconds -= 1
+            else:
+                # 倒计时结束
+                self.stop_heartbeat_countdown()
+                self.statusBar().showMessage("🔄 准备进行心跳验证重试...", 0)
+
+        except Exception as e:
+            logging.error(f"更新心跳倒计时显示异常: {e}")
+
+    def stop_heartbeat_countdown(self):
+        """停止心跳重试倒计时显示"""
+        try:
+            if self.heartbeat_countdown_timer:
+                self.heartbeat_countdown_timer.stop()
+                self.heartbeat_countdown_timer = None
+
+            self.heartbeat_countdown_seconds = 0
+
+        except Exception as e:
+            logging.error(f"停止心跳倒计时显示异常: {e}")
 
     def on_platform_credential_expired(self, platform_name):
         """
@@ -2651,9 +3633,10 @@ class HeartbeatThread(QThread):
     """异步心跳验证线程"""
     heartbeat_result = pyqtSignal(bool, str)  # success, message
 
-    def __init__(self, auth_manager):
+    def __init__(self, auth_manager, heartbeat_type: str = "scheduled"):
         super().__init__()
         self.auth_manager = auth_manager
+        self.heartbeat_type = heartbeat_type
 
     def run(self):
         """执行心跳验证"""
@@ -2664,9 +3647,9 @@ class HeartbeatThread(QThread):
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
 
-            # 执行异步心跳验证
+            # 执行异步心跳验证，传递心跳类型
             success, message = loop.run_until_complete(
-                self.auth_manager.validate_session()
+                self.auth_manager.validate_session(heartbeat_type=self.heartbeat_type)
             )
 
             # 发送结果信号
@@ -2700,6 +3683,10 @@ class RealAPITestThread(QThread):
                 success, message = asyncio.run(self.test_mahua_real_api())
             elif self.platform_type == 'haha':
                 success, message = asyncio.run(self.test_haha_real_api())
+            elif self.platform_type == 'yinghuasuan':
+                success, message = asyncio.run(self.test_yinghuasuan_real_api())
+            elif self.platform_type == 'mango':
+                success, message = asyncio.run(self.test_mango_real_api())
             else:
                 success, message = False, "未知的平台类型"
 
@@ -2756,6 +3743,88 @@ class RealAPITestThread(QThread):
         except Exception as e:
             logging.error(f"哈哈平台真实API测试异常: {e}")
             return False, f"连接测试失败: {str(e)}"
+
+    async def test_yinghuasuan_real_api(self):
+        """使用真实API测试影划算平台连接"""
+        try:
+            from core.platforms.yinghuasuan_adapter import YingHuaSuanAdapter
+
+            # 创建临时适配器实例
+            temp_adapter = YingHuaSuanAdapter("影划算测试", self.config)
+            
+            logging.info(f"🔍 影划算平台连接测试开始")
+            logging.info(f"   Bearer Token (前20字符): {self.config.get('bearer_token', '')[:20]}...")
+
+            # 执行一次真实的API调用来测试连接
+            result = await temp_adapter.fetch_and_process()
+            
+            # 检查是否成功获取数据
+            if result.get('success', False):
+                orders_count = len(result.get('orders', []))
+                return True, f"连接成功！获取到 {orders_count} 条订单数据"
+            else:
+                error_msg = result.get('error', 'API响应格式异常')
+                
+                # 详细诊断错误类型
+                if "认证失败" in error_msg or "登录" in error_msg:
+                    return False, f"Token认证失败: {error_msg}\n\n💡 请检查Bearer Token是否正确且未过期"
+                else:
+                    return False, error_msg
+
+        except Exception as e:
+            logging.error(f"影划算平台真实API测试异常: {e}")
+            error_msg = str(e)
+            
+            # 根据错误内容提供更友好的提示
+            if "认证失败" in error_msg or "登录" in error_msg:
+                return False, f"Token认证失败\n\n💡 请检查以下几点:\n1. Bearer Token是否正确\n2. Token是否已过期\n3. 账号是否有权限访问API"
+            elif "401" in error_msg or "unauthorized" in error_msg.lower():
+                return False, "Token已过期或无效，请重新获取"
+            elif "timeout" in error_msg.lower():
+                return False, "连接超时，请检查网络"
+            else:
+                return False, f"连接测试失败: {error_msg}"
+
+    async def test_mango_real_api(self):
+        """使用真实API测试芒果平台连接"""
+        try:
+            from core.platforms.mango_adapter import MangoAdapter
+
+            # 创建临时适配器实例
+            temp_adapter = MangoAdapter("芒果测试", self.config)
+            
+            logging.info(f"🔍 芒果平台连接测试开始")
+            logging.info(f"   User Token (前20字符): {self.config.get('user_token', '')[:20]}...")
+
+            # 执行一次真实的API调用来测试连接
+            result = await temp_adapter.fetch_and_process()
+            
+            # 检查是否成功获取数据
+            if result.get('success', False):
+                orders_count = len(result.get('orders', []))
+                return True, f"连接成功！获取到 {orders_count} 条订单数据"
+            else:
+                error_msg = result.get('error', 'API响应格式异常')
+                
+                # 详细诊断错误类型
+                if "认证失败" in error_msg or "登录" in error_msg:
+                    return False, f"Token认证失败: {error_msg}\n\n💡 请检查User Token是否正确且未过期"
+                else:
+                    return False, error_msg
+
+        except Exception as e:
+            logging.error(f"芒果平台真实API测试异常: {e}")
+            error_msg = str(e)
+            
+            # 根据错误内容提供更友好的提示
+            if "认证失败" in error_msg or "登录" in error_msg:
+                return False, f"Token认证失败\n\n💡 请检查以下几点:\n1. User Token是否正确\n2. Token是否已过期\n3. 账号是否有权限访问API"
+            elif "401" in error_msg or "unauthorized" in error_msg.lower():
+                return False, "Token已过期或无效，请重新获取"
+            elif "timeout" in error_msg.lower():
+                return False, "连接超时，请检查网络"
+            else:
+                return False, f"连接测试失败: {error_msg}"
 
 
 def main():

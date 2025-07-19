@@ -15,6 +15,16 @@ NETWORK_CONFIG = {
 # --- 平台适配器配置 ---
 PLATFORM_MAX_AUTH_FAILURES = 5  # 平台凭证连续认证失败的最大次数阈值
 
+# --- 影划算平台配置 ---
+# 注意：敏感凭证信息（bearer_token）需要通过UI配置
+YINGHUASUAN_PLATFORM_NAME = "影划算"
+YINGHUASUAN_API_URL = "https://merchant-api.yinghuasuan.com/broker/v1/invitation/list"
+
+# --- 芒果平台配置 ---
+# 注意：敏感凭证信息（user_token）需要通过UI配置
+MANGO_PLATFORM_NAME = "芒果"
+MANGO_API_URL = "https://supplier.mgmovie.net/v2/api/67d77db66adac"
+
 # --- 麻花平台配置 ---
 # 注意：敏感凭证信息（dev_code、secret_key）已移除，需要通过UI配置
 MAHUA_CHANNEL_ID = 'OP0002'  # 固定渠道ID，非敏感信息

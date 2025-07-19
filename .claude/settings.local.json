@@ -1,0 +1,29 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(find:*)",
+      "Bash(rg:*)",
+      "Bash(grep:*)",
+      "Bash(sqlite3:*)",
+      "Bash(python3:*)",
+      "Bash(python:*)",
+      "Bash(venv/Scripts/pip.exe install:*)",
+      "Bash(git --version)",
+      "Bash(venv/Scripts/python.exe -m mcp:*)",
+      "Bash(venv/Scripts/python.exe:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(claude mcp add:*)",
+      "Bash(claude mcp serve:*)",
+      "Bash(curl:*)",
+      "Bash(claude mcp:*)",
+      "Bash(node:*)",
+      "Bash(npm:*)",
+      "Bash(timeout:*)",
+      "WebFetch(domain:apifox.com)",
+      "WebFetch(domain:docs.anthropic.com)",
+      "Bash(source:*)"
+    ],
+    "deny": []
+  }
+}

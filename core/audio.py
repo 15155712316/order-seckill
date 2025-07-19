@@ -1,6 +1,16 @@
 # core/audio.py
+import sys
+import os
 import logging
 import threading
+
+# 禁用comtypes调试输出
+if 'comtypes.client' in sys.modules:
+    import comtypes.client
+    comtypes.client._logger.setLevel(logging.WARNING)
+else:
+    # 在导入comtypes之前设置环境变量
+    os.environ['COMTYPES_LOG_LEVEL'] = 'WARNING'
 import pyttsx3
 
 class TTSPlayer:

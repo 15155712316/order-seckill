@@ -1,0 +1,26 @@
+2025-07-12 10:56:54,267 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花测试适配器V2.0初始化完成
+2025-07-12 10:56:54,406 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花适配器V2.0初始化完成
+2025-07-12 10:57:17,548 [[31mERROR[0m] ticket_grabber.logger.error:308 - 麻花平台连续5次错误，已自动禁用
+2025-07-12 11:36:09,153 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花适配器V2.0初始化完成
+2025-07-12 11:40:46,446 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花适配器V2.0初始化完成
+2025-07-12 11:42:21,012 [[32mINFO[0m] ticket_grabber.logger.info:300 - 哈哈测试适配器V2.0初始化完成
+2025-07-12 11:42:23,086 [[32mINFO[0m] ticket_grabber.logger.info:300 - 哈哈适配器V2.0初始化完成
+2025-07-12 11:42:23,087 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花适配器V2.0初始化完成
+2025-07-12 11:56:15,923 [[32mINFO[0m] ticket_grabber.logger.info:300 - 哈哈适配器V2.0初始化完成
+2025-07-12 11:56:15,924 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花适配器V2.0初始化完成
+2025-07-12 13:54:59,000 [[32mINFO[0m] ticket_grabber.logger.info:300 - 哈哈适配器V2.0初始化完成
+2025-07-12 13:54:59,003 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花适配器V2.0初始化完成
+2025-07-12 15:43:36,280 [[32mINFO[0m] ticket_grabber.logger.info:300 - 测试平台适配器V2.0初始化完成 - LRU缓存大小: 5
+2025-07-12 15:43:36,282 [[32mINFO[0m] ticket_grabber.logger.info:300 - LRU测试适配器V2.0初始化完成 - LRU缓存大小: 5
+2025-07-12 15:46:12,792 [[32mINFO[0m] ticket_grabber.logger.info:300 - 测试平台适配器V2.0初始化完成 - LRU缓存大小: 5
+2025-07-12 15:46:12,797 [[32mINFO[0m] ticket_grabber.logger.info:300 - LRU测试适配器V2.0初始化完成 - LRU缓存大小: 5
+2025-07-12 16:31:48,147 [[32mINFO[0m] ticket_grabber.logger.info:300 - 哈哈适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-12 16:31:48,148 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-12 18:20:39,632 [[32mINFO[0m] ticket_grabber.logger.info:300 - 哈哈适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-12 18:20:39,633 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-12 19:03:31,190 [[32mINFO[0m] ticket_grabber.logger.info:300 - 哈哈适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-12 19:03:31,191 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-12 20:57:46,614 [[32mINFO[0m] ticket_grabber.logger.info:300 - 哈哈适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-12 20:57:46,615 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-12 21:08:18,126 [[32mINFO[0m] ticket_grabber.logger.info:300 - 哈哈适配器V2.0初始化完成 - LRU缓存大小: 500
+2025-07-12 21:08:18,127 [[32mINFO[0m] ticket_grabber.logger.info:300 - 麻花适配器V2.0初始化完成 - LRU缓存大小: 500
